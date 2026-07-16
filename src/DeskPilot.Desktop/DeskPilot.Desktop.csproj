@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../DeskPilot.Application/DeskPilot.Application.csproj" />
+    <ProjectReference Include="../DeskPilot.Infrastructure/DeskPilot.Infrastructure.csproj" />
+    <ProjectReference Include="../DeskPilot.Modules.Abstractions/DeskPilot.Modules.Abstractions.csproj" />
+    <ProjectReference Include="../DeskPilot.Modules.AudioControl/DeskPilot.Modules.AudioControl.csproj" />
+    <ProjectReference Include="../DeskPilot.Modules.ApplicationLauncher/DeskPilot.Modules.ApplicationLauncher.csproj" />
+    <ProjectReference Include="../DeskPilot.Modules.CommandGroups/DeskPilot.Modules.CommandGroups.csproj" />
+    <ProjectReference Include="../DeskPilot.Modules.SystemPower/DeskPilot.Modules.SystemPower.csproj" />
+    <ProjectReference Include="../DeskPilot.Voice.AudioCapture/DeskPilot.Voice.AudioCapture.csproj" />
+    <ProjectReference Include="../DeskPilot.Voice.Vosk/DeskPilot.Voice.Vosk.csproj" />
+    <ProjectReference Include="../DeskPilot.Voice.WhisperCpp/DeskPilot.Voice.WhisperCpp.csproj" />
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Debug" />
+  </ItemGroup>
+</Project>

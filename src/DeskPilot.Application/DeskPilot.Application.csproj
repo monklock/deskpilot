@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../DeskPilot.Core/DeskPilot.Core.csproj" />
+    <ProjectReference Include="../DeskPilot.Modules.Abstractions/DeskPilot.Modules.Abstractions.csproj" />
+    <ProjectReference Include="../DeskPilot.Voice.Abstractions/DeskPilot.Voice.Abstractions.csproj" />
+  </ItemGroup>
+</Project>

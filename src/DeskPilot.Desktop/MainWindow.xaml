@@ -1,0 +1,16 @@
+<Window x:Class="DeskPilot.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DeskPilot"
+        Width="460"
+        Height="220"
+        MinWidth="360"
+        MinHeight="180">
+    <Grid Margin="24">
+        <StackPanel>
+            <TextBlock FontSize="24" FontWeight="SemiBold" Text="DeskPilot" />
+            <TextBlock Margin="0,16,0,0" FontSize="16" Text="{Binding StatusText}" />
+            <TextBlock Margin="0,8,0,0" Foreground="Gray" Text="Voice features will be enabled in a later milestone." />
+        </StackPanel>
+    </Grid>
+</Window>
