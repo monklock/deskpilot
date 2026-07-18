@@ -1,4 +1,4 @@
-using DeskPilot.Infrastructure.Audio;
+using DeskPilot.Infrastructure.Preferences;
 using DeskPilot.Infrastructure.Data;
 using DeskPilot.Modules.AudioControl;
 using FluentAssertions;

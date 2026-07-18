@@ -1,5 +1,5 @@
 using DeskPilot.Infrastructure.Data;
-using DeskPilot.Infrastructure.Audio;
+using DeskPilot.Infrastructure.Preferences;
 using DeskPilot.Modules.AudioControl;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
