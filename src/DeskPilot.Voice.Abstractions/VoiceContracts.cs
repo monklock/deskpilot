@@ -31,8 +31,14 @@ public interface IWakeWordProvider
     string ProviderId { get; }
 
     /// <summary>Waits for a wake phrase detection event.</summary>
-    Task<WakeWordDetectionResult> WaitForDetectionAsync(CancellationToken cancellationToken);
+    Task<WakeWordDetectionResult> WaitForDetectionAsync(
+        IAudioCaptureSession audio,
+        WakeWordOptions options,
+        CancellationToken cancellationToken);
 }
+
+/// <summary>Configures limited-grammar wake phrase detection.</summary>
+public sealed record WakeWordOptions(string Phrase, double MinimumConfidence);
 
 /// <summary>Configures speech-to-text recognition.</summary>
 public sealed record SpeechRecognitionOptions(string Language = "ru", double MinimumConfidence = 0.70);

@@ -6,10 +6,10 @@ Milestone 2 — Wake word and voice recognition
 
 ## Overall Progress
 
-- Progress: 32%
-- Current task: Milestone 2 — Task 2.2 checkpoint: microphone capture, normalization, and Bluetooth recovery
-- Last completed task: Milestone 2 — Task 2.2: exact input selection, recoverable capture, and streaming PCM16 normalization
-- Next task: Milestone 2 — Task 2.3: limited-grammar offline Vosk wake provider
+- Progress: 36%
+- Current task: Milestone 2 — Task 2.3 checkpoint: limited-grammar offline Vosk wake provider
+- Last completed task: Milestone 2 — Task 2.3: native Vosk boundary and wake phrase `альфа`
+- Next task: Milestone 2 — Task 2.4: in-memory VAD, Whisper transcription, and local signals
 - Blockers: None
 
 ## Milestones
@@ -28,9 +28,9 @@ Milestone 2 — Wake word and voice recognition
 
 ### Goal
 
-Proceed to the limited-grammar Vosk wake provider only after the Task 2.2 commit/push checkpoint. Preserve exact endpoint ownership, in-memory audio, and the same-endpoint Bluetooth recovery rule.
+Proceed to in-memory VAD, Whisper transcription, and local signals only after the Task 2.3 commit/push checkpoint. Keep recognized audio in memory and preserve capture-session ownership in the application coordinator.
 
-### Task 2.2 Completion Gate
+### Task 2.3 Completion Gate
 
 - [x] Implementation completed
 - [x] Unit tests added
@@ -42,6 +42,15 @@ Proceed to the limited-grammar Vosk wake provider only after the Task 2.2 commit
 - [x] Public repository check passed
 
 ## Completed Tasks
+
+### 2026-07-18 — Milestone 2, Task 2.3: Limited-grammar offline Vosk wake provider
+
+- Result: Added the offline native Vosk boundary and a model-path-aware wake provider for the exact configured phrase `альфа` over the current normalized capture session.
+- Recognition boundary: Each wake session uses JSON grammar containing only the configured phrase, accepts final text at a configured `0.65..0.90` threshold, and derives phrase confidence from the minimum `result[].conf` value.
+- Safety: Partial results, ambient text, incomplete or out-of-range confidence payloads never activate the pipeline. Rejected text is not logged, and normal finite streams are flushed through `FinalResult()` before reporting end-of-stream.
+- Ownership: The provider disposes the recognizer and native model on success, cancellation, capture failure, provider failure, and normal stream completion without disposing the coordinator-owned audio session.
+- Smoke boundary: Real local validation is opt-in through `DESKPILOT_VOSK_SMOKE_MODEL` and `DESKPILOT_VOSK_SMOKE_AUDIO`; absent variables cause no model, audio, repository, or network access.
+- Tests: Added 27 focused Vosk tests for grammar, confidence, partial and ambient rejection, JSON parsing, native completion, cancellation, capture failures, disposal, DI, and the opt-in smoke boundary. The complete solution now runs 116 tests.
 
 ### 2026-07-18 — Milestone 2, Task 2.2: Recoverable Windows microphone capture
 
@@ -89,4 +98,4 @@ Proceed to the limited-grammar Vosk wake provider only after the Task 2.2 commit
 
 ## Next Task
 
-Milestone 2 — Task 2.3: implement the limited-grammar offline Vosk wake provider for `альфа`.
+Milestone 2 — Task 2.4: implement in-memory VAD, Whisper transcription, and local ready/error signals.

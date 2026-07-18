@@ -415,7 +415,7 @@ git commit -m "feat: add recoverable microphone capture"
 - Consumes: `IAudioCaptureSession`, active `WakeVosk` model path, phrase `альфа`, and configured confidence.
 - Produces: `IWakeWordProvider.WaitForDetectionAsync(IAudioCaptureSession, WakeWordOptions, CancellationToken)` and `WakeWordDetectionResult`.
 
-- [ ] **Step 1: Write failing tests for grammar, confidence threshold, rejected ambient text, cancellation, and disposal.**
+- [x] **Step 1: Write failing tests for grammar, confidence threshold, rejected ambient text, cancellation, and disposal.**
 
 ```csharp
 [Fact]
@@ -435,7 +435,7 @@ public async Task WaitForDetectionAsync_IgnoresPhraseBelowThreshold()
 }
 ```
 
-- [ ] **Step 2: Run the focused test and confirm the provider is missing.**
+- [x] **Step 2: Run the focused test and confirm the provider is missing.**
 
 Run:
 
@@ -445,7 +445,7 @@ dotnet test .\tests\DeskPilot.Voice.Tests\DeskPilot.Voice.Tests.csproj --filter 
 
 Expected: compilation failure naming `IVoskRecognizerClient` or `VoskWakeWordProvider`.
 
-- [ ] **Step 3: Adjust the wake contract to consume the current capture session.**
+- [x] **Step 3: Adjust the wake contract to consume the current capture session.**
 
 ```csharp
 public sealed record WakeWordOptions(string Phrase, double MinimumConfidence);
@@ -462,7 +462,7 @@ public interface IWakeWordProvider
 
 Delete the old parameterless-audio overload so the coordinator remains the only capture-session owner.
 
-- [ ] **Step 4: Implement the native boundary and JSON parser.**
+- [x] **Step 4: Implement the native boundary and JSON parser.**
 
 Add the provider package to `DeskPilot.Voice.Vosk`:
 
@@ -480,13 +480,13 @@ var json = isFinal ? recognizer.Result() : recognizer.PartialResult();
 
 The adapter parses final `result[].conf` values and returns the minimum word confidence for the matched phrase. Partial results may update diagnostics but must not activate unless they contain a confidence supported by the C# result payload. Do not log rejected text; log only provider ID, confidence, and result kind.
 
-- [ ] **Step 5: Implement `VoskWakeWordProvider`.**
+- [x] **Step 5: Implement `VoskWakeWordProvider`.**
 
 Create one recognizer per wake session, require `AudioFormat.Pcm16KhzMono`, feed every frame, compare phrase using trimmed ordinal ignore-case Russian text, ignore confidence below the configured `0.65..0.90` threshold, and dispose the recognizer on success, cancellation, capture failure, and provider failure.
 
 Add an opt-in smoke test controlled by `DESKPILOT_VOSK_SMOKE_MODEL` and `DESKPILOT_VOSK_SMOKE_AUDIO`; if either variable is absent, the test returns without touching the network or repository.
 
-- [ ] **Step 6: Run the Task 3 gate.**
+- [x] **Step 6: Run the Task 3 gate.**
 
 Run:
 
@@ -497,7 +497,7 @@ dotnet build .\src\DeskPilot.Voice.Vosk\DeskPilot.Voice.Vosk.csproj -c Release -
 
 Expected: all Vosk boundary tests pass and the provider project builds without warnings.
 
-- [ ] **Step 7: Commit Task 3.**
+- [x] **Step 7: Commit Task 3.**
 
 ```powershell
 git add Directory.Packages.props src/DeskPilot.Voice.Abstractions src/DeskPilot.Voice.Vosk tests/DeskPilot.Voice.Tests
