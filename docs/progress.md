@@ -6,10 +6,10 @@ Milestone 2 — Wake word and voice recognition
 
 ## Overall Progress
 
-- Progress: 22%
-- Current task: Milestone 2 — define and implement the wake-word and voice-recognition slice
-- Last completed task: Milestone 1 — Task 1.1: Manual audio control vertical slice
-- Next task: Prepare the Milestone 2 implementation plan
+- Progress: 24%
+- Current task: Milestone 2 — Task 2.1: secure voice model management and offline seed models
+- Last completed task: Milestone 2 — approved voice-pipeline design and implementation plan
+- Next task: Implement Task 2.1 through focused TDD commits
 - Blockers: None
 
 ## Milestones
@@ -28,7 +28,7 @@ Milestone 2 — Wake word and voice recognition
 
 ### Goal
 
-Prepare the Milestone 2 wake-word and voice-recognition implementation plan without changing the completed manual audio contour.
+Implement secure voice model management, first-run offline seeding, explicit model updates, activation, rollback, and built-in restoration without changing the completed manual audio contour.
 
 ### Milestone 1 Completion Gate
 
@@ -42,6 +42,14 @@ Prepare the Milestone 2 wake-word and voice-recognition implementation plan with
 - [x] Public repository check passed
 
 ## Completed Tasks
+
+### 2026-07-18 — Milestone 2 planning: voice pipeline and hybrid model delivery
+
+- Result: Approved the complete local voice-pipeline design and split implementation into five reviewable TDD tasks.
+- Models: The publish output contains a Vosk small Russian wake model and multilingual Whisper base; multilingual Whisper small remains an optional explicit download.
+- Safety: Signed catalog, SHA-256 payload verification, safe extraction, atomic activation, rollback, restoration, and public-repository exclusions are mandatory gates.
+- Bluetooth behavior: An explicitly selected input endpoint never falls back silently and resumes only when the same Windows endpoint ID returns.
+- Milestone boundary: Milestone 2 displays recognized Russian text but does not resolve or dispatch commands.
 
 ### 2026-07-18 — Milestone 1, Task 1.1: Manual audio control vertical slice
 
@@ -65,4 +73,4 @@ Prepare the Milestone 2 wake-word and voice-recognition implementation plan with
 
 ## Next Task
 
-Milestone 2 — prepare the wake-word and voice-recognition implementation plan.
+Milestone 2 — Task 2.1: implement secure model management and offline seed initialization.
