@@ -20,9 +20,9 @@ Voice recognition, spoken commands, audio capture, application launching, and au
 
 `DeskPilot.Modules.AudioControl` owns platform-neutral audio contracts, command handlers, state models, and the module registration boundary. The module never exposes COM objects or NAudio types.
 
-`DeskPilot.Infrastructure` implements those contracts for Windows. `NAudio.Wasapi` provides render-endpoint enumeration, default-endpoint resolution, master volume, mute, and notifications. A separate `PolicyConfigAudioEndpointSwitcher` owns the native endpoint-switching interop. The switcher is capability-checked at runtime and returns a failure result instead of propagating a COM exception to the UI.
+`DeskPilot.Infrastructure` implements those contracts for Windows. `NAudio.Wasapi` provides render-endpoint enumeration, default-endpoint resolution, master volume, and mute. A separate `PolicyConfigAudioEndpointSwitcher` owns the native endpoint-switching interop. The switcher is capability-checked at runtime and returns a failure result instead of propagating a COM exception to the UI.
 
-The desktop ViewModel uses the module contracts only. It loads the audio state, exposes explicit commands, and marshals adapter notifications to the WPF dispatcher. The ViewModel neither starts PowerShell nor uses COM directly.
+The desktop ViewModel uses the module contracts only. It loads the audio state, exposes explicit commands, and refreshes state on the WPF dispatcher every two seconds. This polling reflects external volume, mute, default-endpoint, and Bluetooth availability changes without leaking native types into the UI. The ViewModel neither starts PowerShell nor uses COM directly.
 
 ## Persistent Preferences
 

@@ -1,13 +1,48 @@
 using DeskPilot.Core.Commands;
 using DeskPilot.Modules.AudioControl;
+using DeskPilot.Modules.Abstractions.Commands;
 using FluentAssertions;
 using NSubstitute;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace DeskPilot.Modules.Tests;
 
 public sealed class AudioControlTests
 {
+    [Fact]
+    public void AudioControlModule_RegistersEveryAdvertisedCommandHandler()
+    {
+        var module = new AudioControlModule();
+        var services = new ServiceCollection();
+
+        module.RegisterServices(services);
+
+        var registeredHandlerTypes = services
+            .Where(descriptor => descriptor.ServiceType == typeof(ICommandHandler))
+            .Select(descriptor => descriptor.ImplementationType)
+            .ToArray();
+
+        registeredHandlerTypes.Should().BeEquivalentTo(
+        [
+            typeof(SetVolumeCommandHandler),
+            typeof(ChangeVolumeCommandHandler),
+            typeof(SetMuteCommandHandler),
+            typeof(ToggleMuteCommandHandler),
+            typeof(SetDefaultDeviceCommandHandler),
+            typeof(SavePreferredDeviceCommandHandler),
+        ]);
+        module.Metadata.SupportedCommands.Select(static command => command.Value).Should().BeEquivalentTo(
+        [
+            "audio.set-volume",
+            "audio.change-volume",
+            "audio.set-mute",
+            "audio.toggle-mute",
+            "audio.set-default-device",
+            "audio.save-preferred-device",
+        ]);
+    }
+
     [Fact]
     public async Task SetVolumeHandler_RejectsPercentageOutsideInclusiveRange()
     {

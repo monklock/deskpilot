@@ -12,9 +12,20 @@ public sealed class NAudioWindowsCoreAudioClient(PolicyConfigAudioEndpointSwitch
     {
         using var enumerator = new MMDeviceEnumerator();
         using var defaultEndpoint = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-        return enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
-            .Select(endpoint => new AudioOutputDevice(endpoint.ID, endpoint.FriendlyName, true, string.Equals(endpoint.ID, defaultEndpoint.ID, StringComparison.Ordinal)))
-            .ToArray();
+        var devices = new List<AudioOutputDevice>();
+        foreach (var endpoint in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+        {
+            using (endpoint)
+            {
+                devices.Add(new AudioOutputDevice(
+                    endpoint.ID,
+                    endpoint.FriendlyName,
+                    true,
+                    string.Equals(endpoint.ID, defaultEndpoint.ID, StringComparison.Ordinal)));
+            }
+        }
+
+        return devices;
     }
 
     /// <inheritdoc />

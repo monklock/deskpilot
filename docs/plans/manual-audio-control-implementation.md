@@ -47,7 +47,7 @@
 
 **Produces:** `IAudioVolumeService`, `IAudioOutputDeviceService`, `IAudioPreferredDeviceService`, `AudioOutputDevice`, `AudioVolumeState`, `AudioOperationResult`, and handlers for `audio.set-volume`, `audio.change-volume`, `audio.set-mute`, `audio.toggle-mute`, `audio.set-default-device`, and `audio.save-preferred-device`.
 
-- [ ] **Step 1: Write failing tests for volume validation and device-command routing.**
+- [x] **Step 1: Write failing tests for volume validation and device-command routing.**
 
 ```csharp
 [Fact]
@@ -65,13 +65,13 @@ public async Task SetVolumeHandler_RejectsPercentageOutsideInclusiveRange()
 }
 ```
 
-- [ ] **Step 2: Run the test and confirm it fails because the contract and handler do not exist.**
+- [x] **Step 2: Run the test and confirm it fails because the contract and handler do not exist.**
 
 Run: `dotnet test .\tests\DeskPilot.Modules.Tests\DeskPilot.Modules.Tests.csproj --filter FullyQualifiedName~SetVolumeHandler_RejectsPercentageOutsideInclusiveRange`
 
 Expected: compilation failure naming `IAudioVolumeService` or `SetVolumeCommandHandler`.
 
-- [ ] **Step 3: Add immutable contracts and handlers.**
+- [x] **Step 3: Add immutable contracts and handlers.**
 
 ```csharp
 public sealed record AudioVolumeState(string EndpointId, int Percentage, bool IsMuted);
@@ -107,7 +107,7 @@ public interface IAudioPreferredDeviceService
 
 Implement each handler with explicit argument parsing: `percentage` accepts only integers in `0..100`, `delta` only integers in `-100..100`, `muted` only `true` or `false`, `endpointId` a non-empty string, and `slot` only `Speakers` or `Headphones`. Return `Rejected` for malformed input, `Failed` for an unsuccessful operation result, and `Succeeded` only after the service succeeds.
 
-- [ ] **Step 4: Run the complete module test project.**
+- [x] **Step 4: Run the complete module test project.**
 
 Run: `dotnet test .\tests\DeskPilot.Modules.Tests\DeskPilot.Modules.Tests.csproj`
 
@@ -127,7 +127,7 @@ Expected: all existing and new tests pass.
 
 **Produces:** durable `Speakers` and `Headphones` preferences, with endpoint ID, friendly name, and one record per slot.
 
-- [ ] **Step 1: Write the failing SQLite round-trip test.**
+- [x] **Step 1: Write the failing SQLite round-trip test.**
 
 ```csharp
 [Fact]
@@ -142,13 +142,13 @@ public async Task SaveAsync_ReplacesThePreferenceForTheSameSlot()
 }
 ```
 
-- [ ] **Step 2: Run the test and confirm it fails because the preference service does not exist.**
+- [x] **Step 2: Run the test and confirm it fails because the preference service does not exist.**
 
 Run: `dotnet test .\tests\DeskPilot.Infrastructure.Tests\DeskPilot.Infrastructure.Tests.csproj --filter FullyQualifiedName~SaveAsync_ReplacesThePreferenceForTheSameSlot`
 
 Expected: compilation failure naming `SqliteAudioPreferredDeviceService`.
 
-- [ ] **Step 3: Add the entity, model configuration, migration, and repository.**
+- [x] **Step 3: Add the entity, model configuration, migration, and repository.**
 
 ```csharp
 public sealed class AudioDevicePreferenceEntity
@@ -161,7 +161,7 @@ public sealed class AudioDevicePreferenceEntity
 
 Map `Slot` as the key and enforce maximum lengths of 32, 1024, and 512 characters. Use a short-lived context from `IDbContextFactory`, upsert by slot, and call `SaveChangesAsync`. Register the repository as a singleton service that depends on the factory.
 
-- [ ] **Step 4: Extend migration coverage and run infrastructure tests.**
+- [x] **Step 4: Extend migration coverage and run infrastructure tests.**
 
 Run: `dotnet test .\tests\DeskPilot.Infrastructure.Tests\DeskPilot.Infrastructure.Tests.csproj`
 
@@ -173,9 +173,9 @@ Expected: the migrated database contains `AudioDevicePreferences`; preferences s
 
 - Modify: `Directory.Packages.props`
 - Modify: `src/DeskPilot.Infrastructure/DeskPilot.Infrastructure.csproj`
-- Create: `src/DeskPilot.Infrastructure/Audio/WindowsCoreAudioService.cs`
-- Create: `src/DeskPilot.Infrastructure/Audio/PolicyConfigAudioEndpointSwitcher.cs`
-- Create: `src/DeskPilot.Infrastructure/Audio/SystemSoundSettingsLauncher.cs`
+- Create: `src/DeskPilot.Infrastructure/WindowsAudio/WindowsCoreAudioService.cs`
+- Create: `src/DeskPilot.Infrastructure/WindowsAudio/PolicyConfigAudioEndpointSwitcher.cs`
+- Create: `src/DeskPilot.Infrastructure/WindowsAudio/SystemSoundSettingsLauncher.cs`
 - Modify: `src/DeskPilot.Infrastructure/InfrastructureServiceCollectionExtensions.cs`
 - Create: `tests/DeskPilot.Infrastructure.Tests/AudioOperationMappingTests.cs`
 
@@ -183,7 +183,7 @@ Expected: the migrated database contains `AudioDevicePreferences`; preferences s
 
 **Produces:** active render-device enumeration, default-device volume and mute control, change notifications, runtime-checked endpoint switching, and a `ms-settings:sound` fallback.
 
-- [ ] **Step 1: Write failing tests for clamping and unavailable endpoint result mapping.**
+- [x] **Step 1: Write failing tests for clamping and unavailable endpoint result mapping.**
 
 ```csharp
 [Fact]
@@ -198,13 +198,13 @@ public async Task ChangeVolumeAsync_ClampsTheTargetToOneHundred()
 }
 ```
 
-- [ ] **Step 2: Run the test and confirm it fails because the adapter boundary does not exist.**
+- [x] **Step 2: Run the test and confirm it fails because the adapter boundary does not exist.**
 
 Run: `dotnet test .\tests\DeskPilot.Infrastructure.Tests\DeskPilot.Infrastructure.Tests.csproj --filter FullyQualifiedName~ChangeVolumeAsync_ClampsTheTargetToOneHundred`
 
 Expected: compilation failure naming `WindowsCoreAudioService`.
 
-- [ ] **Step 3: Add NAudio and implement the adapter behind a testable native-client boundary.**
+- [x] **Step 3: Add NAudio and implement the adapter behind a testable native-client boundary.**
 
 ```xml
 <PackageVersion Include="NAudio.Wasapi" Version="2.2.1" />
@@ -216,9 +216,9 @@ using var endpoint = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Mu
 var percentage = (int)Math.Round(endpoint.AudioEndpointVolume.MasterVolumeLevelScalar * 100, MidpointRounding.AwayFromZero);
 ```
 
-Enumerate only render endpoints, retain no COM object outside Infrastructure, detach notification callbacks during disposal, and map `COMException`, missing endpoints, and inactive endpoints to unsuccessful `AudioOperationResult` values. `PolicyConfigAudioEndpointSwitcher` must set all three Windows roles (`Console`, `Multimedia`, `Communications`) for the selected endpoint and return an unsupported result when activation fails. The fallback launcher must use `ProcessStartInfo { FileName = "ms-settings:sound", UseShellExecute = true }` only after an explicit unsuccessful switching result.
+Enumerate only active render endpoints, retain no COM object outside Infrastructure, dispose endpoint wrappers after projection, and map `COMException`, missing endpoints, and inactive endpoints to safe operation failures. `PolicyConfigAudioEndpointSwitcher` must set all three Windows roles (`Console`, `Multimedia`, `Communications`) for the selected endpoint and return an unsupported result when activation fails. The fallback launcher must use `ProcessStartInfo { FileName = "ms-settings:sound", UseShellExecute = true }` only after an explicit unsuccessful switching result.
 
-- [ ] **Step 4: Run infrastructure tests.**
+- [x] **Step 4: Run infrastructure tests.**
 
 Run: `dotnet test .\tests\DeskPilot.Infrastructure.Tests\DeskPilot.Infrastructure.Tests.csproj`
 
@@ -242,7 +242,7 @@ Expected: tests pass without changing the developer's default Windows device.
 
 **Produces:** an initialized AudioControl module and UI controls for refresh, volume, mute, speakers, headphones, and settings fallback.
 
-- [ ] **Step 1: Write a failing ViewModel test for unavailable preferred devices.**
+- [x] **Step 1: Write a failing ViewModel test for unavailable preferred devices.**
 
 ```csharp
 [Fact]
@@ -263,13 +263,13 @@ public async Task UsePreferredDeviceAsync_ShowsSafeStatusWhenHeadphonesAreUnavai
 }
 ```
 
-- [ ] **Step 2: Run the test and confirm it fails because `AudioControlViewModel` does not exist.**
+- [x] **Step 2: Run the test and confirm it fails because `AudioControlViewModel` does not exist.**
 
 Run: `dotnet test .\tests\DeskPilot.Desktop.Tests\DeskPilot.Desktop.Tests.csproj --filter FullyQualifiedName~UsePreferredDeviceAsync_ShowsSafeStatusWhenHeadphonesAreUnavailable`
 
 Expected: compilation failure naming `AudioControlViewModel`.
 
-- [ ] **Step 3: Register the module and implement the ViewModel and XAML.**
+- [x] **Step 3: Register the module and implement the ViewModel and XAML.**
 
 ```csharp
 var moduleCatalog = new ModuleCatalog([new AudioControlModule()]);
@@ -278,9 +278,9 @@ services.AddSingleton(moduleCatalog);
 services.AddSingleton<AudioControlViewModel>();
 ```
 
-The ViewModel constructor receives `IAudioOutputDeviceService`, `IAudioVolumeService`, `IAudioPreferredDeviceService`, and `ICommandDispatcher`. It exposes `ObservableCollection<AudioOutputDevice> OutputDevices`, `VolumePercentage`, `IsMuted`, `DefaultDeviceName`, `StatusMessage`, and asynchronous commands for refresh, set volume, increase/decrease volume, toggle mute, save each preferred slot, and activate each preferred slot. Route every mutation through `ICommandDispatcher`; use the three services only for state queries, then refresh state after every successful result. Marshal adapter notifications through `Application.Current.Dispatcher`. Bind the XAML controls with `UpdateSourceTrigger=PropertyChanged` and disable a preferred-device action when its saved endpoint is unavailable.
+The ViewModel constructor receives `IAudioOutputDeviceService`, `IAudioVolumeService`, `IAudioPreferredDeviceService`, `ISystemSoundSettingsLauncher`, and `ICommandDispatcher`. It exposes `ObservableCollection<AudioOutputDevice> OutputDevices`, `VolumePercentage`, `IsMuted`, `DefaultDeviceName`, `StatusMessage`, and asynchronous commands for refresh, set volume, increase/decrease volume, toggle mute, save each preferred slot, and activate each preferred slot. Route every mutation through `ICommandDispatcher`; use the three services only for state queries, then refresh state after every successful result. Refresh state on the WPF dispatcher every two seconds and disable a preferred-device action when its saved endpoint is unavailable.
 
-- [ ] **Step 4: Run desktop and solution tests.**
+- [x] **Step 4: Run desktop and solution tests.**
 
 Run: `dotnet test .\tests\DeskPilot.Desktop.Tests\DeskPilot.Desktop.Tests.csproj`
 
@@ -301,11 +301,11 @@ Expected: ViewModel and full-solution tests pass.
 
 **Produces:** an accurate project status with Task 1.1 complete and Milestone 2 as the next task.
 
-- [ ] **Step 1: Update documentation only after all executable checks pass.**
+- [x] **Step 1: Update documentation only after all executable checks pass.**
 
 Mark the Task 1.1 Definition of Done as complete; record the manual-audio behavior, the Windows-only adapter boundary, and the known limitation that automatic Bluetooth reconnection remains out of scope.
 
-- [ ] **Step 2: Run the complete verification set.**
+- [x] **Step 2: Run the complete verification set.**
 
 Run: `dotnet restore .\DeskPilot.sln`
 
@@ -319,7 +319,7 @@ Run: `git diff --check`
 
 Expected: restore succeeds, build reports zero errors, all tests pass, formatting has no changes, and Git reports no whitespace errors.
 
-- [ ] **Step 3: Run the public-repository safety check.**
+- [x] **Step 3: Run the public-repository safety check.**
 
 Run: `git ls-files | Select-String -Pattern '(^|/)(logs|models|runtime|audio|publish|artifacts)/|\\.(db|db-shm|db-wal|wav|mp3|gguf|bin)$'`
 
