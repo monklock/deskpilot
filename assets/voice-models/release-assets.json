@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "wake": {
+    "uri": "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip",
+    "sha256": "961d5ff98a17f4aa6de69864d0aa71fa5bac682301d2b5d17a3f24c5c99a46d4",
+    "fileName": "wake-ru-0.22.zip",
+    "maximumDownloadBytes": 60000000,
+    "maximumInstalledBytes": 160000000,
+    "licenseId": "Apache-2.0",
+    "licenseUri": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+    "licenseSha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "maximumLicenseBytes": 20000
+  },
+  "whisperBase": {
+    "uri": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+    "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+    "fileName": "ggml-base.bin",
+    "maximumDownloadBytes": 180000000,
+    "licenseId": "MIT",
+    "licenseUri": "https://raw.githubusercontent.com/ggerganov/whisper.cpp/master/LICENSE",
+    "licenseSha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+    "maximumLicenseBytes": 5000
+  },
+  "whisperSmall": {
+    "releaseUri": "https://github.com/monklock/deskpilot/releases/download/voice-models-v1/ggml-small.bin",
+    "sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+    "downloadBytes": 487601104,
+    "installedBytes": 487601104,
+    "licenseId": "MIT"
+  }
+}
