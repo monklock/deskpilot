@@ -32,6 +32,12 @@ public interface IAudioPreferredDeviceService
     Task SaveAsync(AudioDeviceSlot slot, AudioOutputDevice device, CancellationToken cancellationToken);
 }
 
+/// <summary>Opens the system sound settings when automatic endpoint switching is unavailable.</summary>
+public interface ISystemSoundSettingsLauncher
+{
+    AudioOperationResult Open();
+}
+
 public sealed record AudioOperationResult(bool IsSuccess, string? ErrorCode = null, string? Message = null);
 
 public sealed record AudioVolumeState(string EndpointId, int Percentage, bool IsMuted);

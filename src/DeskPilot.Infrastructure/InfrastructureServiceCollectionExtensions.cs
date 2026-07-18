@@ -1,5 +1,6 @@
 using DeskPilot.Infrastructure.Data;
 using DeskPilot.Infrastructure.Preferences;
+using DeskPilot.Infrastructure.WindowsAudio;
 using DeskPilot.Modules.AudioControl;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,6 +20,12 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddDbContextFactory<DeskPilotDbContext>(options => options.UseSqlite($"Data Source={paths.DatabasePath}"));
         services.AddSingleton<IDatabaseInitializer, DatabaseInitializer>();
         services.AddSingleton<IAudioPreferredDeviceService, SqliteAudioPreferredDeviceService>();
+        services.AddSingleton<PolicyConfigAudioEndpointSwitcher>();
+        services.AddSingleton<IWindowsCoreAudioClient, NAudioWindowsCoreAudioClient>();
+        services.AddSingleton<WindowsCoreAudioService>();
+        services.AddSingleton<IAudioVolumeService>(provider => provider.GetRequiredService<WindowsCoreAudioService>());
+        services.AddSingleton<IAudioOutputDeviceService>(provider => provider.GetRequiredService<WindowsCoreAudioService>());
+        services.AddSingleton<ISystemSoundSettingsLauncher, SystemSoundSettingsLauncher>();
         return services;
     }
 }
