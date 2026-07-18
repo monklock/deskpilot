@@ -5,6 +5,7 @@
   <ItemGroup>
     <ProjectReference Include="../DeskPilot.Core/DeskPilot.Core.csproj" />
     <ProjectReference Include="../DeskPilot.Application/DeskPilot.Application.csproj" />
+    <ProjectReference Include="../DeskPilot.Modules.AudioControl/DeskPilot.Modules.AudioControl.csproj" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
       <PrivateAssets>all</PrivateAssets>
