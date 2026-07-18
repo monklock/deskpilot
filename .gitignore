@@ -10,6 +10,7 @@ logs/
 models/
 runtime/
 /audio/
+/tmp/
 publish/
 artifacts/
 *.wav
