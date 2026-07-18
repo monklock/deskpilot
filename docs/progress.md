@@ -2,20 +2,20 @@
 
 ## Current Milestone
 
-Milestone 1 — Manual audio control
+Milestone 2 — Wake word and voice recognition
 
 ## Overall Progress
 
-- Progress: 10%
-- Current task: Milestone 1 — Task 1.1: Manual audio control vertical slice
-- Last completed task: Milestone 0 — Task 0.1: Project foundation and architecture
-- Next task: Implement the manual audio control vertical slice
+- Progress: 22%
+- Current task: Milestone 2 — define and implement the wake-word and voice-recognition slice
+- Last completed task: Milestone 1 — Task 1.1: Manual audio control vertical slice
+- Next task: Prepare the Milestone 2 implementation plan
 - Blockers: None
 
 ## Milestones
 
 - [x] Milestone 0 — Project foundation
-- [ ] Milestone 1 — Manual audio control
+- [x] Milestone 1 — Manual audio control
 - [ ] Milestone 2 — Wake word and voice recognition
 - [ ] Milestone 3 — Voice-controlled audio MVP
 - [ ] Milestone 4 — Applications and command groups
@@ -28,20 +28,28 @@ Milestone 1 — Manual audio control
 
 ### Goal
 
-Implement the manual audio control vertical slice.
+Prepare the Milestone 2 wake-word and voice-recognition implementation plan without changing the completed manual audio contour.
 
-### Definition of Done
+### Milestone 1 Completion Gate
 
-- [ ] Implementation completed
-- [ ] Unit tests added
-- [ ] Build passed
-- [ ] Tests passed
-- [ ] Formatting passed
-- [ ] Documentation updated
-- [ ] Security checks passed
-- [ ] Public repository check passed
+- [x] Implementation completed
+- [x] Unit tests added
+- [x] Build passed
+- [x] Tests passed
+- [x] Formatting passed
+- [x] Documentation updated
+- [x] Security checks passed
+- [x] Public repository check passed
 
 ## Completed Tasks
+
+### 2026-07-18 — Milestone 1, Task 1.1: Manual audio control vertical slice
+
+- Result: Added the complete WPF manual audio contour for active render-device discovery, default-device display and switching, master volume, mute, and persistent speakers/headphones preferences.
+- Bluetooth behavior: A saved headset remains visible but disabled while disconnected; the two-second state refresh recognizes the same endpoint ID after Windows reconnects it and enables manual switching again.
+- Safety: Expected Core Audio and endpoint-switching failures are converted to safe results; unsupported automatic switching opens `ms-settings:sound` without PowerShell, CMD, or helper executables.
+- Tests: Command validation and module registration, SQLite preference persistence, Windows adapter result mapping, external-state refresh, Bluetooth disconnect/reconnect, and settings fallback.
+- Known limitation: DeskPilot does not initiate Bluetooth pairing or reconnection; Windows must connect the headset first.
 
 ### 2026-07-16 — Milestone 0, Task 0.1: Project foundation and architecture
 
@@ -57,4 +65,4 @@ Implement the manual audio control vertical slice.
 
 ## Next Task
 
-Milestone 1 — Task 1.1: Manual audio control vertical slice.
+Milestone 2 — prepare the wake-word and voice-recognition implementation plan.

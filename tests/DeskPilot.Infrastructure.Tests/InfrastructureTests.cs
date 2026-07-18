@@ -16,7 +16,7 @@ public sealed class InfrastructureTests
     }
 
     [Fact]
-    public async Task ApplyMigrationsAsync_CreatesOnlySettingsTables()
+    public async Task ApplyMigrationsAsync_CreatesExpectedLocalTables()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"deskpilot-{Guid.NewGuid():N}.db");
         try
@@ -27,7 +27,7 @@ public sealed class InfrastructureTests
                 await context.Database.MigrateAsync(CancellationToken.None);
                 var tableNames = await context.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type = 'table' ORDER BY name").ToListAsync(CancellationToken.None);
 
-                tableNames.Should().Contain(["ApplicationSettings", "VoiceSettings"]);
+                tableNames.Should().Contain(["ApplicationSettings", "AudioDevicePreferences", "VoiceSettings"]);
                 tableNames.Should().NotContain("Commands");
             }
         }
