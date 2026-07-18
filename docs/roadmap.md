@@ -2,7 +2,7 @@
 
 - [x] Milestone 0 — Project foundation
 - [x] Milestone 1 — Manual audio control vertical slice
-- [ ] Milestone 2 — Wake word and voice recognition
+- [x] Milestone 2 — Wake word and voice recognition
 - [ ] Milestone 3 — Voice-controlled audio MVP
 - [ ] Milestone 4 — Applications and command groups
 - [ ] Milestone 5 — Safe shutdown

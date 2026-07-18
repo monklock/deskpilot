@@ -15,6 +15,7 @@ public sealed class VoiceSettingsContractTests
         settings.MicrophoneEndpointId.Should().BeNull();
         settings.WakePhrase.Should().Be("альфа");
         settings.WakeConfidence.Should().Be(0.80);
+        settings.VoiceActivitySensitivity.Should().Be(0.80);
         settings.Cooldown.Should().Be(TimeSpan.FromSeconds(2));
         settings.RecognitionLanguage.Should().Be("ru");
     }

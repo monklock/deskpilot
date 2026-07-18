@@ -48,7 +48,7 @@ public sealed partial class VoiceModelManagerViewModel : ObservableObject
         }
         catch (Exception exception)
         {
-            _logger.LogWarning(exception, "Unable to initialize voice model state.");
+            LogSafeFailure("initialize", exception);
             StatusMessage = "Не удалось загрузить состояние моделей.";
         }
     }
@@ -69,7 +69,7 @@ public sealed partial class VoiceModelManagerViewModel : ObservableObject
         }
         catch (Exception exception)
         {
-            _logger.LogWarning(exception, "Unable to check for voice model updates.");
+            LogSafeFailure("check-updates", exception);
             StatusMessage = "Не удалось проверить обновления моделей.";
         }
         finally
@@ -110,7 +110,7 @@ public sealed partial class VoiceModelManagerViewModel : ObservableObject
         }
         catch (Exception exception)
         {
-            _logger.LogWarning(exception, "Unable to install voice model {ModelId}.", selected.Id);
+            LogSafeFailure("install", exception, selected.Id);
             StatusMessage = "Не удалось установить модель.";
         }
         finally
@@ -150,7 +150,7 @@ public sealed partial class VoiceModelManagerViewModel : ObservableObject
         }
         catch (Exception exception)
         {
-            _logger.LogWarning(exception, "Unable to activate voice model {ModelId}.", SelectedModel.Id);
+            LogSafeFailure("activate", exception, SelectedModel.Id);
             StatusMessage = "Не удалось активировать модель.";
         }
         finally
@@ -180,7 +180,7 @@ public sealed partial class VoiceModelManagerViewModel : ObservableObject
         }
         catch (Exception exception)
         {
-            _logger.LogWarning(exception, "Unable to restore built-in voice model {ModelId}.", SelectedModel.Id);
+            LogSafeFailure("restore-built-in", exception, SelectedModel.Id);
             StatusMessage = "Не удалось восстановить встроенную модель.";
         }
         finally
@@ -256,4 +256,11 @@ public sealed partial class VoiceModelManagerViewModel : ObservableObject
         VoiceModelResultCode.UnsafeArchive => "Архив модели отклонён как небезопасный.",
         _ => result.Message ?? "Операция с моделью не выполнена.",
     };
+
+    private void LogSafeFailure(string operation, Exception exception, string? modelId = null) =>
+        _logger.LogWarning(
+            "Voice model UI operation {Operation} for {ModelId} failed with {ExceptionType}.",
+            operation,
+            modelId ?? "none",
+            exception.GetType().Name);
 }

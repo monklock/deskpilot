@@ -678,7 +678,7 @@ git commit -m "feat: add local command transcription"
 - Consumes: model manager/store, voice settings, input devices, capture sessions, Vosk wake provider, VAD, Whisper provider, local signals, `TimeProvider`, and structured logging.
 - Produces: one cancellable `VoicePipelineCoordinator`, observable `VoicePipelineSnapshot`, WPF voice controls, verified seed release assets, and the completed Milestone 2 documentation gate.
 
-- [ ] **Step 1: Write failing coordinator tests for every state transition and resource failure.**
+- [x] **Step 1: Write failing coordinator tests for every state transition and resource failure.**
 
 ```csharp
 [Fact]
@@ -720,7 +720,7 @@ public async Task ExplicitBluetoothMicrophoneReconnect_ResumesSameEndpoint()
 
 The application test project must not reference `ICommandDispatcher` from the voice fixture. This proves the Milestone 2 pipeline cannot dispatch recognized text by construction.
 
-- [ ] **Step 2: Run coordinator tests and confirm the application service is missing.**
+- [x] **Step 2: Run coordinator tests and confirm the application service is missing.**
 
 Run:
 
@@ -732,7 +732,7 @@ Expected: compilation failure naming `VoicePipelineCoordinator` or `VoicePipelin
 
 Add `NSubstitute` and a direct project reference to `DeskPilot.Voice.Abstractions` to `DeskPilot.Application.Tests`; production `DeskPilot.Application` already references the abstraction project and must not reference NAudio, Vosk, Whisper.net, WPF, or Infrastructure.
 
-- [ ] **Step 3: Implement the single-owner state machine.**
+- [x] **Step 3: Implement the single-owner state machine.**
 
 ```csharp
 public sealed record VoicePipelineSnapshot(
@@ -758,7 +758,7 @@ public sealed record VoicePipelineSnapshot(
 
 Missing explicit microphone enters `Error` with `microphone-unavailable`; device changes retry only the saved ID. Disabling from any state cancels and awaits the run task. Provider/model failures expose typed safe messages and never include audio or personal absolute paths.
 
-- [ ] **Step 4: Write and implement WPF-independent ViewModel tests.**
+- [x] **Step 4: Write and implement WPF-independent ViewModel tests.**
 
 ```csharp
 [Fact]
@@ -781,7 +781,7 @@ public async Task RefreshMicrophonesAsync_KeepsDisconnectedSavedBluetoothMicroph
 
 `VoiceControlViewModel` exposes enable/disable, microphone refresh/selection, sensitivity `0.65..0.90`, current state, last text, active models, the nested `VoiceModelManagerViewModel`, and safe recovery text. All long-running commands are asynchronous and prevent re-entry.
 
-- [ ] **Step 5: Add the WPF voice and Model Manager surface and register services.**
+- [x] **Step 5: Add the WPF voice and Model Manager surface and register services.**
 
 Add a separate `Голосовое управление` section below the existing manual audio contour with:
 
@@ -796,13 +796,13 @@ Add a separate `Голосовое управление` section below the exist
 
 Register Infrastructure model services, audio capture, Vosk, Whisper, coordinator, state store, the Application implementation of `IVoiceModelActivationGate`, local signals, and ViewModels in `App.CreateHost`. Start the coordinator only after the database and `SeedVoiceModelInitializer` complete. The activation gate cancels and disposes the active wake/capture/native session, holds the coordinator lock during the repository activation transaction, then resumes `WaitingForWakeWord` when its async lease is disposed. During shutdown, disable the coordinator before `StopAsync` and stay within the existing five-second host timeout.
 
-- [ ] **Step 6: Add release model preparation and verification.**
+- [x] **Step 6: Add release model preparation and verification.**
 
-`scripts/voice-model-assets.ps1` accepts explicit artifact URIs, expected SHA-256 values, output directory, and optional signing-key path. It downloads only during an explicit release command, verifies hashes, writes license notices, injects `wake-ru-0.22.zip` and `ggml-base.bin` into `assets\voice-models` under publish output, signs the UTF-8 catalog manifest when a key path is supplied, and fails if any expected asset is missing or oversized.
+`scripts/voice-model-assets.ps1` accepts explicit artifact URIs, expected SHA-256 values, output directory, and a required external signing-key path for release preparation. It downloads only during an explicit release command with bounded streaming, verifies hashes, writes license notices, injects `wake-ru-0.22.zip` and `ggml-base.bin` into `assets\voice-models` under publish output, signs the exact UTF-8 seed and remote catalog manifest bytes, and fails if any expected asset is missing, unsigned, unsafe, or oversized.
 
 Add a verification-only mode used by CI/release that checks manifest schema/signature, SHA-256, Vosk archive structure, Whisper ggml header, license files, and that no seed model is tracked by Git.
 
-- [ ] **Step 7: Run the complete fresh verification gate.**
+- [x] **Step 7: Run the complete fresh verification gate.**
 
 Run:
 
@@ -811,7 +811,8 @@ dotnet restore .\DeskPilot.sln
 dotnet build .\DeskPilot.sln -c Release --no-restore
 dotnet test .\DeskPilot.sln -c Release --no-build
 dotnet format .\DeskPilot.sln --verify-no-changes --no-restore
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\voice-model-assets.ps1 -VerifyOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\voice-model-assets.ps1 -VerifyConfigurationOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\voice-model-assets.ps1 -OutputDirectory .\artifacts\voice-model-publish -VerifyOnly
 git diff --check
 git ls-files | Select-String -CaseSensitive -Pattern '(^|/)(models|runtime|logs|audio|publish|artifacts)/|\.(db|sqlite|wav|mp3|gguf|bin)$'
 git grep -n -I -E 'private key|api key|password|secret' -- ':!docs/security.md'
@@ -819,11 +820,11 @@ git grep -n -I -E 'private key|api key|password|secret' -- ':!docs/security.md'
 
 Expected: restore/build/tests/format/model verification exit `0`; tracked runtime/model scan returns no matches; the secret scan contains no credential value. Then start the WPF application, verify microphone enumeration, select the connected Bluetooth microphone, disconnect/reconnect it, detect `альфа`, speak one Russian command, and confirm only recognized text is displayed.
 
-- [ ] **Step 8: Update milestone documentation only after the full gate passes.**
+- [x] **Step 8: Update milestone documentation only after the full gate passes.**
 
 Mark Milestone 2 complete in `docs/progress.md` and `docs/roadmap.md`; document the implemented pipeline, model update/restore controls, Bluetooth endpoint behavior, offline seed behavior, security boundaries, opt-in smoke variables, and the explicit limitation that command dispatch begins in Milestone 3.
 
-- [ ] **Step 9: Commit Task 5 and push the feature branch.**
+- [x] **Step 9: Commit Task 5 and push the feature branch.**
 
 ```powershell
 git add src tests scripts assets/voice-models docs
@@ -835,11 +836,11 @@ After remote verification, create a pull request from `feature/wake-word-voice-r
 
 ## Completion Checklist
 
-- [ ] Built-in Vosk small Russian and Whisper base models work offline from publish output.
-- [ ] Optional multilingual Whisper small can be checked, downloaded, cancelled, verified, activated, rolled back, and removed from active use without corrupting the seed model.
-- [ ] The selected Bluetooth/USB microphone persists and recovers only by the same endpoint ID.
-- [ ] `альфа` activates one command capture; VAD enforces 250 ms, 900 ms, and 10 seconds.
-- [ ] Whisper recognizes Russian locally and WPF displays text without resolving or dispatching it.
-- [ ] Audio is never persisted, transmitted, or logged.
-- [ ] Full restore/build/test/format/release-asset/security/public-repository gate passes.
-- [ ] Documentation marks only Milestone 2 complete and routes the next feature from updated `develop`.
+- [x] Built-in Vosk small Russian and Whisper base models work offline from publish output.
+- [x] Optional multilingual Whisper small can be checked, downloaded, cancelled, verified, activated, rolled back, and removed from active use without corrupting the seed model.
+- [x] The selected Bluetooth/USB microphone persists and recovers only by the same endpoint ID.
+- [x] `альфа` activates one command capture; VAD enforces 250 ms, 900 ms, and 10 seconds.
+- [x] Whisper recognizes Russian locally and WPF displays text without resolving or dispatching it.
+- [x] Audio is never persisted, transmitted, or logged.
+- [x] Full restore/build/test/format/release-asset/security/public-repository gate passes.
+- [x] Documentation marks only Milestone 2 complete and routes the next feature from updated `develop`.

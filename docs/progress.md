@@ -2,21 +2,21 @@
 
 ## Current Milestone
 
-Milestone 2 — Wake word and voice recognition
+Milestone 3 — Voice-controlled audio MVP
 
 ## Overall Progress
 
-- Progress: 40%
-- Current task: Milestone 2 — Task 2.4 checkpoint: in-memory VAD, Whisper transcription, and local signals
-- Last completed task: Milestone 2 — Task 2.4: bounded command capture and local Russian transcription
-- Next task: Milestone 2 — Task 2.5: voice state machine, WPF surface, and release assets
+- Progress: 50%
+- Current task: Milestone 2 — Task 2.5 completion and feature pull request
+- Last completed task: Milestone 2 — Task 2.5: complete offline wake-to-text contour and hybrid model delivery
+- Next task: Merge the feature pull request into `develop`, then create a new `feature/*` branch from updated `develop` for Milestone 3
 - Blockers: None
 
 ## Milestones
 
 - [x] Milestone 0 — Project foundation
 - [x] Milestone 1 — Manual audio control
-- [ ] Milestone 2 — Wake word and voice recognition
+- [x] Milestone 2 — Wake word and voice recognition
 - [ ] Milestone 3 — Voice-controlled audio MVP
 - [ ] Milestone 4 — Applications and command groups
 - [ ] Milestone 5 — Safe shutdown
@@ -28,9 +28,9 @@ Milestone 2 — Wake word and voice recognition
 
 ### Goal
 
-Proceed to the voice state machine, WPF surface, and release assets only after the Task 2.4 commit/push checkpoint. Preserve the one-session-at-a-time rule and stop at recognized-text publication without command dispatch.
+Complete the voice state machine, WPF surface, hybrid release assets, and final Milestone 2 gate. Preserve the one-session-at-a-time rule and stop at recognized-text publication without command dispatch.
 
-### Task 2.4 Completion Gate
+### Task 2.5 Completion Gate
 
 - [x] Implementation completed
 - [x] Unit tests added
@@ -40,8 +40,19 @@ Proceed to the voice state machine, WPF surface, and release assets only after t
 - [x] Documentation updated
 - [x] Security checks passed
 - [x] Public repository check passed
+- [x] Live Bluetooth reconnect and recognized-text smoke confirmed
 
 ## Completed Tasks
+
+### 2026-07-18 — Milestone 2, Task 2.5: Complete offline wake-to-text contour and hybrid model delivery
+
+- Result: Added the single-owner voice state machine, observable safe state, WPF voice controls, exact microphone selection, model-management surface, startup seeding, activation gate, bounded shutdown, and recognized-text publication without intent resolution or command dispatch.
+- Offline release: A release command downloads pinned Vosk small Russian and multilingual Whisper base assets with byte limits, verifies SHA-256/provider structures, includes pinned full license texts, signs the exact seed and optional-model catalog bytes with ECDSA P-256, and rejects unsigned or incomplete bundles.
+- Model updates: The UI provides explicit check, download/update, cancellation, activation, and built-in restoration. Multilingual Whisper small remains optional and uses the signed `voice-models-v1` GitHub release catalog.
+- Bluetooth behavior: An active wake or command capture disconnect enters exact-endpoint recovery. DeskPilot never falls back to another microphone and resumes only after Windows returns the same saved endpoint ID.
+- Safety: One lifecycle owner prevents overlapping runs; wake capture is disposed before command capture, command capture before Whisper; audio remains in memory; exception paths and credentials are not logged; shutdown always attempts tray, host, and process resource cleanup within the shared timeout.
+- Verification: Fresh restore, Release build with zero warnings/errors, formatting, signed release-bundle verification, public-repository/security scans, and 170 automated tests passed. The live WPF smoke confirmed Bluetooth microphone selection/reconnect, `альфа`, and Russian recognized-text display.
+- Review: Independent read-only review and re-review found no remaining Critical or Important issues.
 
 ### 2026-07-18 — Milestone 2, Task 2.4: In-memory VAD, Whisper transcription, and local signals
 
@@ -108,4 +119,4 @@ Proceed to the voice state machine, WPF surface, and release assets only after t
 
 ## Next Task
 
-Milestone 2 — Task 2.5: integrate the voice state machine, WPF voice surface, offline seed assets, and final Milestone 2 gate.
+Merge `feature/wake-word-voice-recognition` into `develop` through its reviewed pull request. After `develop` is updated, create a new `feature/*` branch from it for Milestone 3.

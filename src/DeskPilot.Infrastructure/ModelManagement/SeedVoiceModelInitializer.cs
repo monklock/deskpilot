@@ -6,7 +6,8 @@ namespace DeskPilot.Infrastructure.ModelManagement;
 public sealed class SeedVoiceModelInitializer(
     string seedDirectory,
     VoiceModelInstaller installer,
-    IVoiceModelStore store) : ISeedVoiceModelSource
+    IVoiceModelStore store,
+    VoiceModelManifestVerifier verifier) : ISeedVoiceModelSource
 {
     /// <inheritdoc />
     public async Task<IReadOnlyList<VoiceModelDescriptor>> GetCatalogAsync(CancellationToken cancellationToken)
@@ -77,8 +78,37 @@ public sealed class SeedVoiceModelInitializer(
 
     private async Task<VoiceModelManifest> ReadManifestAsync(CancellationToken cancellationToken)
     {
-        var manifestPath = Path.Combine(Path.GetFullPath(seedDirectory), "seed-manifest.json");
-        var bytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+        byte[] bytes;
+        byte[] signature;
+        try
+        {
+            var seedRoot = Path.GetFullPath(seedDirectory);
+            bytes = await File
+                .ReadAllBytesAsync(Path.Combine(seedRoot, "seed-manifest.json"), cancellationToken)
+                .ConfigureAwait(false);
+            signature = await File
+                .ReadAllBytesAsync(Path.Combine(seedRoot, "seed-manifest.sig"), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new VoiceModelCatalogException(
+                VoiceModelResultCode.InvalidSignature,
+                "Подпись встроенного каталога моделей недоступна.",
+                exception);
+        }
+
+        if (!verifier.Verify(bytes, signature))
+        {
+            throw new VoiceModelCatalogException(
+                VoiceModelResultCode.InvalidSignature,
+                "Подпись встроенного каталога моделей недействительна.");
+        }
+
         var manifest = VoiceModelManifestSerializer.Deserialize(bytes);
         if (manifest.SchemaVersion != 1 || manifest.Models.Count == 0)
         {

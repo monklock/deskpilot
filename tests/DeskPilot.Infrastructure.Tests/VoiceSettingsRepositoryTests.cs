@@ -28,7 +28,8 @@ public sealed class VoiceSettingsRepositoryTests
             IsEnabled = true,
             MicrophoneEndpointId = "bluetooth-input-id",
             MicrophoneFriendlyName = "Bluetooth microphone",
-            WakeConfidence = 0.87,
+            WakeConfidence = 0.82,
+            VoiceActivitySensitivity = 0.87,
         };
 
         await repository.SaveAsync(expected, CancellationToken.None);
@@ -45,6 +46,35 @@ public sealed class VoiceSettingsRepositoryTests
         var action = () => repository.SaveAsync(
             VoiceSettings.Default with { WakeConfidence = 0.91 },
             CancellationToken.None);
+
+        await action.Should().ThrowAsync<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public async Task SaveAsync_VoiceActivitySensitivityOutsideApprovedRange_IsRejected()
+    {
+        await using var database = await VoiceModelManagementTests.TestDatabase.CreateAsync();
+        var repository = new SqliteVoiceSettingsRepository(database.Factory);
+
+        var action = () => repository.SaveAsync(
+            VoiceSettings.Default with { VoiceActivitySensitivity = 0.64 },
+            CancellationToken.None);
+
+        await action.Should().ThrowAsync<ArgumentOutOfRangeException>();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SaveAsync_NonFiniteSensitivity_IsRejected(bool wakeSensitivity)
+    {
+        await using var database = await VoiceModelManagementTests.TestDatabase.CreateAsync();
+        var repository = new SqliteVoiceSettingsRepository(database.Factory);
+        var settings = wakeSensitivity
+            ? VoiceSettings.Default with { WakeConfidence = double.NaN }
+            : VoiceSettings.Default with { VoiceActivitySensitivity = double.NaN };
+
+        var action = () => repository.SaveAsync(settings, CancellationToken.None);
 
         await action.Should().ThrowAsync<ArgumentOutOfRangeException>();
     }

@@ -13,6 +13,7 @@ public sealed class SqliteVoiceSettingsRepository(IDbContextFactory<DeskPilotDbC
     private const string MicrophoneNameKey = "voice.microphone.friendly-name";
     private const string WakePhraseKey = "voice.wake.phrase";
     private const string WakeConfidenceKey = "voice.wake.confidence";
+    private const string VoiceActivitySensitivityKey = "voice.activity.sensitivity";
     private const string CooldownMillisecondsKey = "voice.cooldown-milliseconds";
     private const string RecognitionLanguageKey = "voice.recognition.language";
 
@@ -32,6 +33,7 @@ public sealed class SqliteVoiceSettingsRepository(IDbContextFactory<DeskPilotDbC
             ReadNullable(values, MicrophoneNameKey),
             ReadString(values, WakePhraseKey, defaults.WakePhrase),
             ReadDouble(values, WakeConfidenceKey, defaults.WakeConfidence),
+            ReadDouble(values, VoiceActivitySensitivityKey, defaults.VoiceActivitySensitivity),
             TimeSpan.FromMilliseconds(ReadDouble(values, CooldownMillisecondsKey, defaults.Cooldown.TotalMilliseconds)),
             ReadString(values, RecognitionLanguageKey, defaults.RecognitionLanguage));
     }
@@ -45,9 +47,15 @@ public sealed class SqliteVoiceSettingsRepository(IDbContextFactory<DeskPilotDbC
             throw new ArgumentException("Wake phrase is required.", nameof(settings));
         }
 
-        if (settings.WakeConfidence is < 0.65 or > 0.90)
+        if (!double.IsFinite(settings.WakeConfidence) || settings.WakeConfidence is < 0.65 or > 0.90)
         {
             throw new ArgumentOutOfRangeException(nameof(settings), "Wake confidence must be in the inclusive 0.65..0.90 range.");
+        }
+
+        if (!double.IsFinite(settings.VoiceActivitySensitivity)
+            || settings.VoiceActivitySensitivity is < 0.65 or > 0.90)
+        {
+            throw new ArgumentOutOfRangeException(nameof(settings), "Voice activity sensitivity must be in the inclusive 0.65..0.90 range.");
         }
 
         if (settings.Cooldown <= TimeSpan.Zero)
@@ -69,6 +77,7 @@ public sealed class SqliteVoiceSettingsRepository(IDbContextFactory<DeskPilotDbC
             [MicrophoneNameKey] = settings.MicrophoneFriendlyName ?? string.Empty,
             [WakePhraseKey] = settings.WakePhrase,
             [WakeConfidenceKey] = settings.WakeConfidence.ToString("R", CultureInfo.InvariantCulture),
+            [VoiceActivitySensitivityKey] = settings.VoiceActivitySensitivity.ToString("R", CultureInfo.InvariantCulture),
             [CooldownMillisecondsKey] = settings.Cooldown.TotalMilliseconds.ToString("R", CultureInfo.InvariantCulture),
             [RecognitionLanguageKey] = settings.RecognitionLanguage,
         };

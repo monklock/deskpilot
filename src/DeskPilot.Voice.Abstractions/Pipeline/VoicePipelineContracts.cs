@@ -7,6 +7,7 @@ public sealed record VoiceSettings(
     string? MicrophoneFriendlyName,
     string WakePhrase,
     double WakeConfidence,
+    double VoiceActivitySensitivity,
     TimeSpan Cooldown,
     string RecognitionLanguage)
 {
@@ -16,6 +17,7 @@ public sealed record VoiceSettings(
         null,
         null,
         "альфа",
+        0.80,
         0.80,
         TimeSpan.FromSeconds(2),
         "ru");

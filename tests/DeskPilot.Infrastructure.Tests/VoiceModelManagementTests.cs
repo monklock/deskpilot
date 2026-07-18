@@ -30,6 +30,36 @@ public sealed class VoiceModelManagementTests
     }
 
     [Fact]
+    public async Task SeedCatalogAsync_SignatureCreatedByAnotherKey_IsRejected()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var store = new VoiceModelStore(database.Factory);
+        using var root = new TemporaryDirectory();
+        var paths = new AppDataPaths(root.Path);
+        var seedDirectory = Path.Combine(root.Path, "publish-assets");
+        Directory.CreateDirectory(seedDirectory);
+        var manifest = "{\"schemaVersion\":1,\"models\":[]}"u8.ToArray();
+        await File.WriteAllBytesAsync(Path.Combine(seedDirectory, "seed-manifest.json"), manifest);
+        using var trustedKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var untrustedKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        await File.WriteAllBytesAsync(
+            Path.Combine(seedDirectory, "seed-manifest.sig"),
+            untrustedKey.SignData(manifest, HashAlgorithmName.SHA256));
+        using var client = CreateClient(new StaticHttpHandler([]));
+        var installer = new VoiceModelInstaller(client, paths, store, ["downloads.example.test"]);
+        var initializer = new SeedVoiceModelInitializer(
+            seedDirectory,
+            installer,
+            store,
+            new VoiceModelManifestVerifier(trustedKey.ExportSubjectPublicKeyInfoPem()));
+
+        var action = () => initializer.GetCatalogAsync(CancellationToken.None);
+
+        (await action.Should().ThrowAsync<VoiceModelCatalogException>())
+            .Which.Code.Should().Be(VoiceModelResultCode.InvalidSignature);
+    }
+
+    [Fact]
     public async Task ActivateAsync_MarksPreviousVersionAsLastKnownGood()
     {
         await using var database = await TestDatabase.CreateAsync();
@@ -223,9 +253,10 @@ public sealed class VoiceModelManagementTests
             }
             """;
         await File.WriteAllTextAsync(Path.Combine(seedDirectory, "seed-manifest.json"), manifest, Encoding.UTF8);
+        var verifier = await SignSeedManifestAsync(seedDirectory);
         using var client = CreateClient(new StaticHttpHandler([]));
         var installer = new VoiceModelInstaller(client, paths, store, ["downloads.example.test"]);
-        var initializer = new SeedVoiceModelInitializer(seedDirectory, installer, store);
+        var initializer = new SeedVoiceModelInitializer(seedDirectory, installer, store, verifier);
 
         var result = await initializer.InitializeAsync(CancellationToken.None);
 
@@ -638,7 +669,7 @@ public sealed class VoiceModelManagementTests
         var original = Encoding.ASCII.GetBytes("lmgg-original-content");
         var replacement = Encoding.ASCII.GetBytes("lmgg-replacement-content");
         await File.WriteAllBytesAsync(Path.Combine(seedDirectory, "ggml-base.bin"), replacement);
-        await WriteSeedManifestAsync(
+        var verifier = await WriteSeedManifestAsync(
             seedDirectory,
             Convert.ToHexString(SHA256.HashData(replacement)),
             replacement.Length);
@@ -659,7 +690,7 @@ public sealed class VoiceModelManagementTests
             CancellationToken.None);
         using var client = CreateClient(new StaticHttpHandler([]));
         var installer = new VoiceModelInstaller(client, paths, store, ["downloads.example.test"]);
-        var initializer = new SeedVoiceModelInitializer(seedDirectory, installer, store);
+        var initializer = new SeedVoiceModelInitializer(seedDirectory, installer, store, verifier);
 
         var restored = await initializer.RestoreAsync(VoiceModelProvider.CommandWhisper, CancellationToken.None);
 
@@ -680,10 +711,10 @@ public sealed class VoiceModelManagementTests
         var expected = Encoding.ASCII.GetBytes("lmgg-seed-content");
         var hash = Convert.ToHexString(SHA256.HashData(expected));
         await File.WriteAllBytesAsync(Path.Combine(seedDirectory, "ggml-base.bin"), expected);
-        await WriteSeedManifestAsync(seedDirectory, hash, expected.Length);
+        var verifier = await WriteSeedManifestAsync(seedDirectory, hash, expected.Length);
         using var client = CreateClient(new StaticHttpHandler([]));
         var installer = new VoiceModelInstaller(client, paths, store, ["downloads.example.test"]);
-        var initializer = new SeedVoiceModelInitializer(seedDirectory, installer, store);
+        var initializer = new SeedVoiceModelInitializer(seedDirectory, installer, store, verifier);
         await initializer.InitializeAsync(CancellationToken.None);
         var active = (await store.GetActiveAsync(VoiceModelProvider.CommandWhisper, CancellationToken.None))!;
         var installedPath = Path.Combine(paths.ModelsRootPath, active.RelativePath, "ggml-base.bin");
@@ -728,7 +759,10 @@ public sealed class VoiceModelManagementTests
             "0.0.0",
             "99.0.0");
 
-    private static async Task WriteSeedManifestAsync(string seedDirectory, string hash, int modelLength)
+    private static async Task<VoiceModelManifestVerifier> WriteSeedManifestAsync(
+        string seedDirectory,
+        string hash,
+        int modelLength)
     {
         var manifest = $$"""
             {
@@ -754,6 +788,17 @@ public sealed class VoiceModelManagementTests
             }
             """;
         await File.WriteAllTextAsync(Path.Combine(seedDirectory, "seed-manifest.json"), manifest, Encoding.UTF8);
+        return await SignSeedManifestAsync(seedDirectory);
+    }
+
+    private static async Task<VoiceModelManifestVerifier> SignSeedManifestAsync(string seedDirectory)
+    {
+        var manifest = await File.ReadAllBytesAsync(Path.Combine(seedDirectory, "seed-manifest.json"));
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        await File.WriteAllBytesAsync(
+            Path.Combine(seedDirectory, "seed-manifest.sig"),
+            key.SignData(manifest, HashAlgorithmName.SHA256));
+        return new VoiceModelManifestVerifier(key.ExportSubjectPublicKeyInfoPem());
     }
 
     private static byte[] CreateZip(params (string Name, string Content)[] entries)

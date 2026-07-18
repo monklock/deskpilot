@@ -74,7 +74,8 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<SeedVoiceModelInitializer>(provider => new SeedVoiceModelInitializer(
             options.SeedDirectory,
             provider.GetRequiredService<VoiceModelInstaller>(),
-            provider.GetRequiredService<IVoiceModelStore>()));
+            provider.GetRequiredService<IVoiceModelStore>(),
+            provider.GetRequiredService<VoiceModelManifestVerifier>()));
         services.AddSingleton<ISeedVoiceModelSource>(provider => provider.GetRequiredService<SeedVoiceModelInitializer>());
         services.AddSingleton<IVoiceModelManager, VoiceModelManager>();
         return services;

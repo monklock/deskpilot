@@ -50,6 +50,7 @@ public partial class MainWindow : Window
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         await _viewModel.Audio.RefreshAsync();
+        await _viewModel.Voice.InitializeAsync();
         _audioRefreshTimer.Start();
     }
 
