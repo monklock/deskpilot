@@ -17,6 +17,16 @@ public sealed record AudioInputDevice(
 /// <summary>Owns one normalized PCM16 audio buffer.</summary>
 public sealed record AudioFrame(ReadOnlyMemory<byte> Pcm16, TimeSpan Duration);
 
+/// <summary>Owns bounded normalized command audio captured entirely in memory.</summary>
+public sealed record CapturedCommandAudio(
+    ReadOnlyMemory<byte> Pcm16,
+    AudioFormat Format,
+    TimeSpan Duration)
+{
+    /// <summary>Opens an isolated read-only copy of the captured audio.</summary>
+    public Stream OpenRead() => new MemoryStream(Pcm16.ToArray(), writable: false);
+}
+
 /// <summary>Identifies a microphone resolution or capture result.</summary>
 public enum AudioInputResultCode
 {

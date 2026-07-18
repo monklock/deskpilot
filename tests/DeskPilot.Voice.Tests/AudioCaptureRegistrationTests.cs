@@ -27,5 +27,9 @@ public sealed class AudioCaptureRegistrationTests
         services.Should().Contain(descriptor =>
             descriptor.ServiceType == typeof(IAudioCaptureSessionFactory)
             && descriptor.ImplementationType == typeof(NAudioCaptureFactory));
+        services.Should().Contain(descriptor =>
+            descriptor.ServiceType == typeof(IVoiceActivityDetector)
+            && descriptor.ImplementationType == typeof(EnergyVoiceActivityDetector)
+            && descriptor.Lifetime == ServiceLifetime.Singleton);
     }
 }

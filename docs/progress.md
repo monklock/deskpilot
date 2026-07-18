@@ -6,10 +6,10 @@ Milestone 2 — Wake word and voice recognition
 
 ## Overall Progress
 
-- Progress: 36%
-- Current task: Milestone 2 — Task 2.3 checkpoint: limited-grammar offline Vosk wake provider
-- Last completed task: Milestone 2 — Task 2.3: native Vosk boundary and wake phrase `альфа`
-- Next task: Milestone 2 — Task 2.4: in-memory VAD, Whisper transcription, and local signals
+- Progress: 40%
+- Current task: Milestone 2 — Task 2.4 checkpoint: in-memory VAD, Whisper transcription, and local signals
+- Last completed task: Milestone 2 — Task 2.4: bounded command capture and local Russian transcription
+- Next task: Milestone 2 — Task 2.5: voice state machine, WPF surface, and release assets
 - Blockers: None
 
 ## Milestones
@@ -28,9 +28,9 @@ Milestone 2 — Wake word and voice recognition
 
 ### Goal
 
-Proceed to in-memory VAD, Whisper transcription, and local signals only after the Task 2.3 commit/push checkpoint. Keep recognized audio in memory and preserve capture-session ownership in the application coordinator.
+Proceed to the voice state machine, WPF surface, and release assets only after the Task 2.4 commit/push checkpoint. Preserve the one-session-at-a-time rule and stop at recognized-text publication without command dispatch.
 
-### Task 2.3 Completion Gate
+### Task 2.4 Completion Gate
 
 - [x] Implementation completed
 - [x] Unit tests added
@@ -42,6 +42,16 @@ Proceed to in-memory VAD, Whisper transcription, and local signals only after th
 - [x] Public repository check passed
 
 ## Completed Tasks
+
+### 2026-07-18 — Milestone 2, Task 2.4: In-memory VAD, Whisper transcription, and local signals
+
+- Result: Added bounded in-memory command capture, local Russian Whisper.cpp transcription, typed recognition failures, model-path-aware DI, and fixed Windows feedback tones.
+- VAD boundary: Arbitrary normalized capture buffers are reframed into 20 ms PCM16 windows. Leading silence is discarded, sensitivity `0.65..0.90` maps inversely to the RMS threshold, 250 ms speech is required, 900 ms trailing silence completes capture, and a ten-second total limit handles both long commands and no-speech timeout.
+- Whisper boundary: Whisper.net 1.9.1 CPU processes only mono 16 kHz PCM16 from memory, always uses language `ru`, joins final segments, averages valid confidence values, and rejects missing models, invalid formats, blank text, low confidence, and provider failures through typed codes.
+- Ownership and privacy: Pooled VAD buffers are cleared before return, native processors and factories are disposed deterministically, command audio is not persisted or logged, and smoke tests read only explicitly configured local files.
+- Signals: `Ready`, `Success`, and `Failure` map to fixed local Windows system tones and run outside the WPF dispatcher without user-supplied audio files.
+- Smoke boundary: Real local Whisper validation is opt-in through `DESKPILOT_WHISPER_SMOKE_MODEL` and `DESKPILOT_WHISPER_SMOKE_AUDIO`; absent variables cause no model, audio, repository, or network access.
+- Tests: Added 27 focused VAD, Whisper, DI, smoke, cancellation, disposal, and local-signal cases. The complete solution now runs 143 tests.
 
 ### 2026-07-18 — Milestone 2, Task 2.3: Limited-grammar offline Vosk wake provider
 
@@ -98,4 +108,4 @@ Proceed to in-memory VAD, Whisper transcription, and local signals only after th
 
 ## Next Task
 
-Milestone 2 — Task 2.4: implement in-memory VAD, Whisper transcription, and local ready/error signals.
+Milestone 2 — Task 2.5: integrate the voice state machine, WPF voice surface, offline seed assets, and final Milestone 2 gate.

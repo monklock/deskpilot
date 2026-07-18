@@ -525,7 +525,7 @@ git commit -m "feat: add alpha wake word provider"
 - Consumes: normalized `AudioFrame` values, `VoiceActivityOptions.Default`, active `CommandWhisper` model path, and language `ru`.
 - Produces: `CapturedCommandAudio`, `VoiceActivityResult`, `ISpeechToTextProvider`, and `IVoiceSignalService`.
 
-- [ ] **Step 1: Write failing VAD tests with synthetic PCM and Whisper tests with a fake native client.**
+- [x] **Step 1: Write failing VAD tests with synthetic PCM and Whisper tests with a fake native client.**
 
 ```csharp
 [Theory]
@@ -560,7 +560,7 @@ public async Task RecognizeAsync_ForcesRussianAndConcatenatesFinalSegments()
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm VAD/Whisper types are missing.**
+- [x] **Step 2: Run the focused tests and confirm VAD/Whisper types are missing.**
 
 Run:
 
@@ -570,7 +570,7 @@ dotnet test .\tests\DeskPilot.Voice.Tests\DeskPilot.Voice.Tests.csproj --filter 
 
 Expected: compilation failures naming the detector or Whisper client boundary.
 
-- [ ] **Step 3: Replace the stream-only VAD result with bounded captured audio.**
+- [x] **Step 3: Replace the stream-only VAD result with bounded captured audio.**
 
 ```csharp
 public sealed record CapturedCommandAudio(ReadOnlyMemory<byte> Pcm16, AudioFormat Format, TimeSpan Duration)
@@ -591,11 +591,11 @@ public interface IVoiceActivityDetector
 
 Remove the obsolete `IAudioInputStream` contract after all consumers use capture sessions.
 
-- [ ] **Step 4: Implement energy VAD with the approved timing limits.**
+- [x] **Step 4: Implement energy VAD with the approved timing limits.**
 
 Process 20 ms frames, calculate RMS from little-endian PCM16, and use a configurable threshold derived from the microphone sensitivity. Discard leading silence, start the in-memory buffer at the first speech frame, require 250 ms total speech, finish after 900 ms trailing silence, and hard-stop at ten seconds. Clear pooled buffers in `finally`; return `SpeechDetected=false` for noise shorter than the minimum.
 
-- [ ] **Step 5: Implement the Whisper.net 1.9.1 CPU adapter.**
+- [x] **Step 5: Implement the Whisper.net 1.9.1 CPU adapter.**
 
 Add both packages to `DeskPilot.Voice.WhisperCpp`:
 
@@ -620,7 +620,7 @@ Convert PCM16 to `float[]` by dividing each signed sample by `32768f`. Reject no
 
 Add an opt-in smoke test controlled by `DESKPILOT_WHISPER_SMOKE_MODEL` and `DESKPILOT_WHISPER_SMOKE_AUDIO`; absence means skip without download.
 
-- [ ] **Step 6: Add local signal service without user audio files.**
+- [x] **Step 6: Add local signal service without user audio files.**
 
 ```csharp
 public enum VoiceSignal { Ready, Success, Failure }
@@ -633,7 +633,7 @@ public interface IVoiceSignalService
 
 `LocalVoiceSignalService` maps `Ready`, `Success`, and `Failure` to short local system tones. It never blocks the WPF dispatcher, records audio, or opens a file supplied by the user.
 
-- [ ] **Step 7: Run the Task 4 gate.**
+- [x] **Step 7: Run the Task 4 gate.**
 
 Run:
 
@@ -644,7 +644,7 @@ dotnet build .\src\DeskPilot.Voice.WhisperCpp\DeskPilot.Voice.WhisperCpp.csproj 
 
 Expected: synthetic PCM and fake-native tests pass; Whisper project builds without warnings.
 
-- [ ] **Step 8: Commit Task 4.**
+- [x] **Step 8: Commit Task 4.**
 
 ```powershell
 git add Directory.Packages.props src/DeskPilot.Voice.Abstractions src/DeskPilot.Voice.AudioCapture src/DeskPilot.Voice.WhisperCpp src/DeskPilot.Desktop/Services tests/DeskPilot.Voice.Tests
