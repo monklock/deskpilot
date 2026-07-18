@@ -1,0 +1,31 @@
+using DeskPilot.Voice.Abstractions;
+using DeskPilot.Voice.AudioCapture;
+using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
+using Xunit;
+
+namespace DeskPilot.Voice.Tests;
+
+public sealed class AudioCaptureRegistrationTests
+{
+    [Fact]
+    public void AddDeskPilotVoiceAudioCapture_RegistersWindowsCaptureGraph()
+    {
+        var services = new ServiceCollection();
+
+        services.AddDeskPilotVoiceAudioCapture();
+
+        services.Should().Contain(descriptor =>
+            descriptor.ServiceType == typeof(IWindowsCaptureEndpointSource)
+            && descriptor.Lifetime == ServiceLifetime.Singleton);
+        services.Should().Contain(descriptor =>
+            descriptor.ServiceType == typeof(IAudioInputDeviceService)
+            && descriptor.ImplementationType == typeof(NAudioInputDeviceService));
+        services.Should().Contain(descriptor =>
+            descriptor.ServiceType == typeof(IWindowsCaptureClientFactory)
+            && descriptor.ImplementationType == typeof(NAudioWindowsCaptureClientFactory));
+        services.Should().Contain(descriptor =>
+            descriptor.ServiceType == typeof(IAudioCaptureSessionFactory)
+            && descriptor.ImplementationType == typeof(NAudioCaptureFactory));
+    }
+}

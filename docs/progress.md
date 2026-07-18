@@ -6,10 +6,10 @@ Milestone 2 — Wake word and voice recognition
 
 ## Overall Progress
 
-- Progress: 28%
-- Current task: Milestone 2 — Task 2.1 checkpoint: secure voice model management
-- Last completed task: Milestone 2 — Task 2.1: model-management contracts, secure installation, rollback, and UI state
-- Next task: Milestone 2 — Task 2.2: microphone capture, normalization, and Bluetooth recovery
+- Progress: 32%
+- Current task: Milestone 2 — Task 2.2 checkpoint: microphone capture, normalization, and Bluetooth recovery
+- Last completed task: Milestone 2 — Task 2.2: exact input selection, recoverable capture, and streaming PCM16 normalization
+- Next task: Milestone 2 — Task 2.3: limited-grammar offline Vosk wake provider
 - Blockers: None
 
 ## Milestones
@@ -28,9 +28,9 @@ Milestone 2 — Wake word and voice recognition
 
 ### Goal
 
-Proceed to Windows microphone selection and capture only after the Task 2.1 commit/push checkpoint. Preserve the completed manual audio contour and the same-endpoint Bluetooth recovery rule.
+Proceed to the limited-grammar Vosk wake provider only after the Task 2.2 commit/push checkpoint. Preserve exact endpoint ownership, in-memory audio, and the same-endpoint Bluetooth recovery rule.
 
-### Milestone 1 Completion Gate
+### Task 2.2 Completion Gate
 
 - [x] Implementation completed
 - [x] Unit tests added
@@ -42,6 +42,14 @@ Proceed to Windows microphone selection and capture only after the Task 2.1 comm
 - [x] Public repository check passed
 
 ## Completed Tasks
+
+### 2026-07-18 — Milestone 2, Task 2.2: Recoverable Windows microphone capture
+
+- Result: Added Windows capture-endpoint enumeration, exact microphone selection, WASAPI session ownership, typed failures, and dependency-injection registration through NAudio 2.2.1.
+- Bluetooth behavior: An explicitly selected headset microphone never falls back to another endpoint. Device notifications are broadcast without a reconnect gap, and the same Windows endpoint ID becomes resolvable again after reconnect.
+- Audio boundary: Native callback bytes are copied into a bounded in-memory channel; mono PCM16 at 16 kHz is produced on a background worker with continuous WDL resampler state. Audio is not logged, persisted, or transmitted.
+- Recovery: Disconnect, unsupported-format, startup, normalization, and hot-unplug paths stop and dispose native/COM ownership without leaking the selected device.
+- Tests: Added 20 focused tests for selection, reconnect races, multi-subscriber notifications, callback isolation, frame ownership, streaming conversion, cleanup, factory mapping, and DI. The complete solution now runs 89 tests.
 
 ### 2026-07-18 — Milestone 2, Task 2.1: Secure voice model management
 
@@ -81,4 +89,4 @@ Proceed to Windows microphone selection and capture only after the Task 2.1 comm
 
 ## Next Task
 
-Milestone 2 — Task 2.2: implement Windows input-device selection, normalized capture, and same-endpoint Bluetooth reconnect behavior.
+Milestone 2 — Task 2.3: implement the limited-grammar offline Vosk wake provider for `альфа`.

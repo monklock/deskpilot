@@ -275,18 +275,23 @@ git commit -m "feat: add secure voice model manager"
 - Create: `src/DeskPilot.Voice.AudioCapture/NAudioCaptureFactory.cs`
 - Create: `src/DeskPilot.Voice.AudioCapture/NAudioCaptureSession.cs`
 - Create: `src/DeskPilot.Voice.AudioCapture/Pcm16Normalizer.cs`
+- Create: `src/DeskPilot.Voice.AudioCapture/NAudioWindowsCaptureClientFactory.cs`
+- Create: `src/DeskPilot.Voice.AudioCapture/NAudioWindowsCaptureEndpointSource.cs`
 - Create: `src/DeskPilot.Voice.AudioCapture/AudioCaptureServiceCollectionExtensions.cs`
+- Create: `src/DeskPilot.Voice.AudioCapture/Properties/AssemblyInfo.cs`
 - Modify: `tests/DeskPilot.Voice.Tests/DeskPilot.Voice.Tests.csproj`
 - Create: `tests/DeskPilot.Voice.Tests/AudioInputDeviceServiceTests.cs`
 - Create: `tests/DeskPilot.Voice.Tests/Pcm16NormalizerTests.cs`
 - Create: `tests/DeskPilot.Voice.Tests/AudioCaptureSessionTests.cs`
+- Create: `tests/DeskPilot.Voice.Tests/AudioCaptureRegistrationTests.cs`
+- Create: `tests/DeskPilot.Voice.Tests/CaptureEndpointChangeBroadcasterTests.cs`
 
 **Interfaces:**
 
 - Consumes: `IVoiceSettingsRepository`, `TimeProvider`, and NAudio 2.2.1 `MMDeviceEnumerator` / `WasapiCapture` behind internal boundaries.
 - Produces: `IAudioInputDeviceService`, `IAudioCaptureSessionFactory`, `IAudioCaptureSession`, `AudioInputDevice`, and normalized `AudioFrame` values.
 
-- [ ] **Step 1: Write failing tests for default selection, explicit selection, disconnect, same-ID reconnect, frame ownership, and PCM conversion.**
+- [x] **Step 1: Write failing tests for default selection, explicit selection, disconnect, same-ID reconnect, frame ownership, and PCM conversion.**
 
 ```csharp
 [Fact]
@@ -313,7 +318,7 @@ public void Normalize_StereoFloat48k_ReturnsMonoPcm16At16k()
 }
 ```
 
-- [ ] **Step 2: Run the focused voice tests and confirm the new contracts are missing.**
+- [x] **Step 2: Run the focused voice tests and confirm the new contracts are missing.**
 
 Run:
 
@@ -323,7 +328,7 @@ dotnet test .\tests\DeskPilot.Voice.Tests\DeskPilot.Voice.Tests.csproj --filter 
 
 Expected: compilation failures naming audio input and capture types.
 
-- [ ] **Step 3: Add capture contracts with owned frame memory.**
+- [x] **Step 3: Add capture contracts with owned frame memory.**
 
 ```csharp
 public sealed record AudioFormat(int SampleRate, int Channels, int BitsPerSample, bool IsFloat)
@@ -364,19 +369,19 @@ Change `DeskPilot.Voice.Tests` to `net10.0-windows`, add project references to `
 <PackageReference Include="NAudio.Wasapi" />
 ```
 
-- [ ] **Step 4: Implement the NAudio 2.2.1 adapter and conversion boundary.**
+- [x] **Step 4: Implement the NAudio 2.2.1 adapter and conversion boundary.**
 
 Use `MMDeviceEnumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active)`, `MMDevice.ID`, `FriendlyName`, and `GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia)`. Open an explicit endpoint with `new WasapiCapture(device)`, subscribe to `DataAvailable` and `RecordingStopped`, and publish copied buffers into a bounded `Channel<byte[]>`.
 
-`Pcm16Normalizer` converts the native format to mono floating-point samples, averages channels, resamples to 16,000 Hz through `WdlResamplingSampleProvider`, clamps to `[-1, 1]`, and encodes signed little-endian PCM16. Reject formats that NAudio cannot expose as PCM or IEEE float.
+`Pcm16Normalizer` converts the native format to mono floating-point samples, averages channels, preserves input-driven `WdlResampler` state across callback buffers, resamples to 16,000 Hz, clamps to `[-1, 1]`, and encodes signed little-endian PCM16. Reject formats that NAudio cannot expose as PCM or IEEE float.
 
-- [ ] **Step 5: Implement device change monitoring and recovery semantics.**
+- [x] **Step 5: Implement device change monitoring and recovery semantics.**
 
 `WatchAsync` coalesces Core Audio notifications and re-enumerates active capture endpoints. If the persisted endpoint ID is absent, the consumer receives `SelectedDeviceUnavailable`; when the exact same ID reappears, it is resolvable again. If the stored endpoint is `null`, each new session resolves the current Windows default.
 
 On `RecordingStopped` with an exception or device invalidation, complete the channel with a typed `AudioCaptureException(AudioInputResultCode.Disconnected, ...)`, unsubscribe events, stop capture once, and dispose NAudio/COM objects.
 
-- [ ] **Step 6: Run the Task 2 gate.**
+- [x] **Step 6: Run the Task 2 gate.**
 
 Run:
 
@@ -387,7 +392,7 @@ dotnet build .\src\DeskPilot.Voice.AudioCapture\DeskPilot.Voice.AudioCapture.csp
 
 Expected: all capture tests pass; the Windows capture project builds without warnings.
 
-- [ ] **Step 7: Commit Task 2.**
+- [x] **Step 7: Commit Task 2.**
 
 ```powershell
 git add src/DeskPilot.Voice.Abstractions src/DeskPilot.Voice.AudioCapture tests/DeskPilot.Voice.Tests
@@ -808,7 +813,7 @@ dotnet test .\DeskPilot.sln -c Release --no-build
 dotnet format .\DeskPilot.sln --verify-no-changes --no-restore
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\voice-model-assets.ps1 -VerifyOnly
 git diff --check
-git ls-files | Select-String -Pattern '(^|/)(models|runtime|logs|audio|publish|artifacts)/|\.(db|sqlite|wav|mp3|gguf|bin)$'
+git ls-files | Select-String -CaseSensitive -Pattern '(^|/)(models|runtime|logs|audio|publish|artifacts)/|\.(db|sqlite|wav|mp3|gguf|bin)$'
 git grep -n -I -E 'private key|api key|password|secret' -- ':!docs/security.md'
 ```
 
