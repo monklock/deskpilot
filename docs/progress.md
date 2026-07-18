@@ -6,10 +6,10 @@ Milestone 2 — Wake word and voice recognition
 
 ## Overall Progress
 
-- Progress: 24%
-- Current task: Milestone 2 — Task 2.1: secure voice model management and offline seed models
-- Last completed task: Milestone 2 — approved voice-pipeline design and implementation plan
-- Next task: Implement Task 2.1 through focused TDD commits
+- Progress: 28%
+- Current task: Milestone 2 — Task 2.1 checkpoint: secure voice model management
+- Last completed task: Milestone 2 — Task 2.1: model-management contracts, secure installation, rollback, and UI state
+- Next task: Milestone 2 — Task 2.2: microphone capture, normalization, and Bluetooth recovery
 - Blockers: None
 
 ## Milestones
@@ -28,7 +28,7 @@ Milestone 2 — Wake word and voice recognition
 
 ### Goal
 
-Implement secure voice model management, first-run offline seeding, explicit model updates, activation, rollback, and built-in restoration without changing the completed manual audio contour.
+Proceed to Windows microphone selection and capture only after the Task 2.1 commit/push checkpoint. Preserve the completed manual audio contour and the same-endpoint Bluetooth recovery rule.
 
 ### Milestone 1 Completion Gate
 
@@ -42,6 +42,14 @@ Implement secure voice model management, first-run offline seeding, explicit mod
 - [x] Public repository check passed
 
 ## Completed Tasks
+
+### 2026-07-18 — Milestone 2, Task 2.1: Secure voice model management
+
+- Result: Added voice settings, signed catalog verification, user-initiated model download/update commands, immutable installation, activation, last-known-good rollback state, and built-in restoration.
+- Security: Every HTTPS redirect origin is allow-listed, request timeouts cover response bodies, payloads are streamed through SHA-256, ZIP traversal/links/limits are rejected, and real Whisper/Vosk structures are validated before registration.
+- Transactions: Existing version directories are reused only after a full content comparison; failed replacement keeps the recovery backup, and UI progress callbacks cannot invalidate a committed database record.
+- Release boundary: No model binary is tracked. Real seed assets, generated seed manifest, Application activation gate, startup seeding, and the WPF Model Manager surface remain in Task 2.5 as planned.
+- Tests: Added focused coverage for settings, migrations, DI, signature/hash failures, redirects, timeouts, cancellation, archive safety, provider formats, collision recovery, rollback state, and explicit UI commands.
 
 ### 2026-07-18 — Milestone 2 planning: voice pipeline and hybrid model delivery
 
@@ -73,4 +81,4 @@ Implement secure voice model management, first-run offline seeding, explicit mod
 
 ## Next Task
 
-Milestone 2 — Task 2.1: implement secure model management and offline seed initialization.
+Milestone 2 — Task 2.2: implement Windows input-device selection, normalized capture, and same-endpoint Bluetooth reconnect behavior.

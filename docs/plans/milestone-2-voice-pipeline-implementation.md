@@ -27,7 +27,7 @@
 | Path | Responsibility |
 | --- | --- |
 | `src/DeskPilot.Voice.Abstractions/Audio/VoiceAudioContracts.cs` | Microphone, normalized frame, capture-session, and VAD contracts. |
-| `src/DeskPilot.Voice.Abstractions/Models/VoiceModelContracts.cs` | Model catalog, install, activation, and progress contracts. |
+| `src/DeskPilot.Voice.Abstractions/ModelManagement/VoiceModelContracts.cs` | Model catalog, install, activation, and progress contracts. |
 | `src/DeskPilot.Voice.Abstractions/Pipeline/VoicePipelineContracts.cs` | Wake, transcription, signals, settings, errors, and pipeline snapshots. |
 | `src/DeskPilot.Infrastructure/Data/*` | Voice settings and installed-model persistence plus migration. |
 | `src/DeskPilot.Infrastructure/ModelManagement/*` | Seed catalog, signed remote catalog, secure download, extraction, activation, rollback, and restoration. |
@@ -38,7 +38,7 @@
 | `src/DeskPilot.Desktop/ViewModels/VoiceControlViewModel.cs` | Voice, microphone, model, progress, and diagnostic presentation state. |
 | `src/DeskPilot.Desktop/MainWindow.xaml` | Voice control and Model Manager WPF surface. |
 | `scripts/voice-model-assets.ps1` | Release-only download, hash verification, license collection, and seed injection. |
-| `assets/voice-models/seed-manifest.json` | Small tracked metadata file; contains no model binaries. |
+| `assets/voice-models/seed-manifest.json` | Release-generated metadata from verified seed assets; created in Task 5 and contains no model binaries. |
 | `tests/DeskPilot.Voice.Tests/*` | Contracts, capture, VAD, Vosk, Whisper, and coordinator tests. |
 | `tests/DeskPilot.Infrastructure.Tests/VoiceModelManagementTests.cs` | Persistence and secure model transaction tests. |
 | `tests/DeskPilot.Desktop.Tests/VoiceControlViewModelTests.cs` | WPF-independent UI state and command tests. |
@@ -52,7 +52,7 @@
 - Modify: `src/DeskPilot.Infrastructure/Data/AppDataPaths.cs`
 - Modify: `src/DeskPilot.Infrastructure/Data/DeskPilotDbContext.cs`
 - Create: `src/DeskPilot.Infrastructure/Data/Migrations/202607180002_AddVoiceModels.cs`
-- Create: `src/DeskPilot.Voice.Abstractions/Models/VoiceModelContracts.cs`
+- Create: `src/DeskPilot.Voice.Abstractions/ModelManagement/VoiceModelContracts.cs`
 - Create: `src/DeskPilot.Voice.Abstractions/Pipeline/VoicePipelineContracts.cs`
 - Create: `src/DeskPilot.Infrastructure/Preferences/SqliteVoiceSettingsRepository.cs`
 - Create: `src/DeskPilot.Infrastructure/ModelManagement/VoiceModelManifest.cs`
@@ -63,7 +63,6 @@
 - Create: `src/DeskPilot.Infrastructure/ModelManagement/VoiceModelManager.cs`
 - Create: `src/DeskPilot.Infrastructure/ModelManagement/SeedVoiceModelInitializer.cs`
 - Create: `src/DeskPilot.Desktop/ViewModels/VoiceModelManagerViewModel.cs`
-- Create: `assets/voice-models/seed-manifest.json`
 - Create: `tests/DeskPilot.Infrastructure.Tests/VoiceModelManagementTests.cs`
 - Create: `tests/DeskPilot.Desktop.Tests/VoiceModelManagerViewModelTests.cs`
 
@@ -72,7 +71,7 @@
 - Consumes: `IAppDataPaths`, `IDbContextFactory<DeskPilotDbContext>`, `HttpClient`, and `TimeProvider`.
 - Produces: `IVoiceSettingsRepository`, `IVoiceModelManager`, `VoiceModelDescriptor`, `VoiceModelState`, `VoiceModelProgress`, and `VoiceModelManagerViewModel`.
 
-- [ ] **Step 1: Write failing tests for defaults, signature rejection, hash rejection, rollback, restoration, cancellation, and explicit download.**
+- [x] **Step 1: Write failing tests for defaults, signature rejection, hash rejection, rollback, restoration, cancellation, and explicit download.**
 
 ```csharp
 [Fact]
@@ -105,7 +104,7 @@ public async Task DownloadCommand_DoesNotRunUntilUserInvokesIt()
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm they fail because model contracts and services do not exist.**
+- [x] **Step 2: Run the focused tests and confirm they fail because model contracts and services do not exist.**
 
 Run:
 
@@ -116,7 +115,7 @@ dotnet test .\tests\DeskPilot.Desktop.Tests\DeskPilot.Desktop.Tests.csproj --fil
 
 Expected: compilation failures naming `IVoiceModelManager`, `VoiceModelInstaller`, or `VoiceModelManagerViewModel`.
 
-- [ ] **Step 3: Add package versions, references, paths, and the model/settings contracts.**
+- [x] **Step 3: Add package versions, references, paths, and the model/settings contracts.**
 
 ```xml
 <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.8" />
@@ -186,9 +185,9 @@ public interface IVoiceSettingsRepository
 
 Add `ModelsRootPath`, `ModelDownloadsPath`, and `SeedModelsPath` to `IAppDataPaths`; all persisted model paths remain relative to `ModelsRootPath`.
 
-Add a project reference from `DeskPilot.Infrastructure` to `DeskPilot.Voice.Abstractions`, plus `Microsoft.Extensions.Http`. Register one named `HttpClient` with a finite request timeout, redirect validation, and no ambient credentials.
+Add a project reference from `DeskPilot.Infrastructure` to `DeskPilot.Voice.Abstractions`, plus `Microsoft.Extensions.Http`. Register one owned HTTP transport with a finite request timeout, automatic redirects disabled, no ambient credentials, and manual validation of every HTTPS redirect origin.
 
-- [ ] **Step 4: Add SQLite entities, migration, and repositories with immutable version activation.**
+- [x] **Step 4: Add SQLite entities, migration, and repositories with immutable version activation.**
 
 ```csharp
 public sealed class InstalledVoiceModelEntity
@@ -207,7 +206,7 @@ public sealed class InstalledVoiceModelEntity
 
 Configure the composite key `(ProviderId, Version)`, a unique filtered active index per provider, and one transaction that clears the old active row, marks it last-known-good, and activates the requested installed row. Store voice settings as explicit keys under `VoiceSettings`; do not serialize native provider objects or absolute paths.
 
-- [ ] **Step 5: Implement exact-byte manifest verification and the safe installation transaction.**
+- [x] **Step 5: Implement exact-byte manifest verification and the safe installation transaction.**
 
 ```csharp
 public bool Verify(ReadOnlySpan<byte> manifest, ReadOnlySpan<byte> signature)
@@ -227,10 +226,10 @@ public bool Verify(ReadOnlySpan<byte> manifest, ReadOnlySpan<byte> signature)
 5. Extract or copy into `<ModelsRootPath>\staging\<guid>` on the final volume.
 6. Validate the expected entry point and provider-specific model header/directory structure.
 7. Rename staging to `<provider>\<model-id>\<version>` without overwriting an existing version.
-8. Enter `IVoiceModelActivationGate`, persist installed state, then activate only through the repository transaction while capture/native provider sessions are stopped.
+8. Persist the verified version as installed but inactive. Explicit activation runs separately through `IVoiceModelManager` and `IVoiceModelActivationGate` while capture/native provider sessions are stopped.
 9. Delete `.part` and staging data in `finally`; never delete the currently active or last-known-good version.
 
-- [ ] **Step 6: Add the tracked seed manifest and Model Manager ViewModel.**
+- [x] **Step 6: Add the seed-manifest contract and Model Manager ViewModel.**
 
 ```json
 {
@@ -244,9 +243,9 @@ public bool Verify(ReadOnlySpan<byte> manifest, ReadOnlySpan<byte> signature)
 
 `VoiceModelManagerViewModel` exposes `CheckForUpdatesCommand`, `DownloadOrUpdateCommand`, `CancelDownloadCommand`, `UseModelCommand`, and `RestoreBuiltInCommand`. It creates a new cancellation source for each explicit download, reports percentage from `VoiceModelProgress`, disables conflicting actions while busy, and maps typed result codes to safe Russian messages.
 
-`SeedVoiceModelInitializer` runs after database migration and before the coordinator. It reads the read-only publish seed manifest, verifies the bundled asset hashes, copies/extracts missing immutable seed versions into `ModelsRootPath`, registers them as built-in, and activates a seed only when that provider has no healthy active version. `RestoreBuiltInAsync` repeats the same verification and installation path instead of trusting a writable local copy.
+`SeedVoiceModelInitializer` reads the read-only publish seed manifest, verifies the bundled asset hashes, copies/extracts missing immutable seed versions into `ModelsRootPath`, registers them as built-in, and activates a seed only when that provider has no healthy active version. `RestoreBuiltInAsync` repeats the same verification and installation path instead of trusting a writable local copy. Task 1 defines and tests this contract; Task 5 generates the real manifest from verified release assets, registers the Application activation gate, and invokes seeding after database migration but before the coordinator starts.
 
-- [ ] **Step 7: Run the Task 1 gate.**
+- [x] **Step 7: Run the Task 1 gate.**
 
 Run:
 
@@ -258,10 +257,10 @@ dotnet build .\DeskPilot.sln -c Release --no-restore
 
 Expected: all focused tests pass and Release build exits with code `0` and no warnings.
 
-- [ ] **Step 8: Commit Task 1.**
+- [x] **Step 8: Commit Task 1.**
 
 ```powershell
-git add Directory.Packages.props assets/voice-models src/DeskPilot.Voice.Abstractions src/DeskPilot.Infrastructure src/DeskPilot.Desktop/ViewModels/VoiceModelManagerViewModel.cs tests/DeskPilot.Infrastructure.Tests tests/DeskPilot.Desktop.Tests
+git add Directory.Packages.props src/DeskPilot.Voice.Abstractions src/DeskPilot.Infrastructure src/DeskPilot.Desktop/ViewModels/VoiceModelManagerViewModel.cs tests/DeskPilot.Infrastructure.Tests tests/DeskPilot.Desktop.Tests
 git commit -m "feat: add secure voice model manager"
 ```
 
