@@ -141,6 +141,23 @@ public sealed class AudioControlTests
         await preferences.DidNotReceive().SaveAsync(Arg.Any<AudioDeviceSlot>(), Arg.Any<AudioOutputDevice>(), Arg.Any<CancellationToken>());
     }
 
+    [Theory]
+    [InlineData("0")]
+    [InlineData("1")]
+    public async Task SavePreferredDeviceHandler_RejectsNumericSlot(string slot)
+    {
+        var outputService = Substitute.For<IAudioOutputDeviceService>();
+        var preferences = Substitute.For<IAudioPreferredDeviceService>();
+        var handler = new SavePreferredDeviceCommandHandler(outputService, preferences);
+
+        var result = await handler.HandleAsync(
+            Request("audio.save-preferred-device", ("endpointId", "endpoint-a"), ("slot", slot)),
+            CancellationToken.None);
+
+        result.Status.Should().Be(CommandExecutionStatus.Rejected);
+        await preferences.DidNotReceive().SaveAsync(Arg.Any<AudioDeviceSlot>(), Arg.Any<AudioOutputDevice>(), Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task SavePreferredDeviceHandler_SavesMatchingOutputDeviceInRequestedSlot()
     {

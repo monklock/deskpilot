@@ -17,7 +17,7 @@ public interface IAudioVolumeService
 /// <summary>Provides platform-specific audio output device operations.</summary>
 public interface IAudioOutputDeviceService
 {
-    Task<IReadOnlyList<AudioOutputDevice>> GetDevicesAsync(CancellationToken cancellationToken);
+    Task<IReadOnlyCollection<AudioOutputDevice>> GetDevicesAsync(CancellationToken cancellationToken);
 
     Task<AudioOutputDevice?> GetDefaultDeviceAsync(AudioDeviceRole role, CancellationToken cancellationToken);
 
@@ -32,21 +32,20 @@ public interface IAudioPreferredDeviceService
     Task SaveAsync(AudioDeviceSlot slot, AudioOutputDevice device, CancellationToken cancellationToken);
 }
 
-public sealed record AudioOperationResult(bool Succeeded, string? ErrorCode = null, string? Message = null);
+public sealed record AudioOperationResult(bool IsSuccess, string? ErrorCode = null, string? Message = null);
 
 public sealed record AudioVolumeState(string EndpointId, int Percentage, bool IsMuted);
 
 public enum AudioDeviceRole
 {
     Multimedia,
-    Communications,
 }
 
 public sealed record AudioDeviceSwitchRequest(string EndpointId, AudioDeviceRole Role);
 
-public sealed record AudioDeviceSwitchResult(bool Succeeded, string? ErrorCode = null, string? Message = null);
+public sealed record AudioDeviceSwitchResult(bool IsSuccess, string? ErrorCode = null, string? Message = null);
 
-public sealed record AudioOutputDevice(string EndpointId, string DisplayName, bool IsActive, bool IsDefault);
+public sealed record AudioOutputDevice(string EndpointId, string FriendlyName, bool IsAvailable, bool IsDefault);
 
 public enum AudioDeviceSlot
 {

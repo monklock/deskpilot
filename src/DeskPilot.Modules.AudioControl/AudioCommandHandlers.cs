@@ -54,7 +54,7 @@ public sealed class SetDefaultDeviceCommandHandler(IAudioOutputDeviceService ser
     {
         if (!TryGetRequired(request, "endpointId", out var endpointId)) return Rejected(request, "Endpoint ID is required.");
         var result = await service.SetDefaultDeviceAsync(new AudioDeviceSwitchRequest(endpointId, AudioDeviceRole.Multimedia), cancellationToken);
-        return result.Succeeded ? CommandExecutionResult.Succeeded(request.CommandId) : new CommandExecutionResult(request.CommandId, CommandExecutionStatus.Failed, result.Message);
+        return result.IsSuccess ? CommandExecutionResult.Succeeded(request.CommandId) : new CommandExecutionResult(request.CommandId, CommandExecutionStatus.Failed, result.Message);
     }
 }
 
@@ -95,11 +95,20 @@ file static class AudioCommandHandlerSupport
     public static bool TryGetSlot(CommandRequest request, out AudioDeviceSlot slot)
     {
         slot = default;
-        return request.Arguments is not null && request.Arguments.TryGetValue("slot", out var text) && Enum.TryParse(text, true, out slot) && Enum.IsDefined(slot);
+        if (request.Arguments is null || !request.Arguments.TryGetValue("slot", out var text)) return false;
+
+        slot = text switch
+        {
+            "Speakers" => AudioDeviceSlot.Speakers,
+            "Headphones" => AudioDeviceSlot.Headphones,
+            _ => default,
+        };
+
+        return text is "Speakers" or "Headphones";
     }
 
     public static CommandExecutionResult Rejected(CommandRequest request, string message) => new(request.CommandId, CommandExecutionStatus.Rejected, message);
 
     public static CommandExecutionResult ToResult(CommandRequest request, AudioOperationResult result) =>
-        result.Succeeded ? CommandExecutionResult.Succeeded(request.CommandId) : new CommandExecutionResult(request.CommandId, CommandExecutionStatus.Failed, result.Message);
+        result.IsSuccess ? CommandExecutionResult.Succeeded(request.CommandId) : new CommandExecutionResult(request.CommandId, CommandExecutionStatus.Failed, result.Message);
 }
