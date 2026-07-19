@@ -16,6 +16,8 @@ public sealed class AudioControlModule : IDeskPilotModule
         CommandId.From("audio.toggle-mute"),
         CommandId.From("audio.set-default-device"),
         CommandId.From("audio.save-preferred-device"),
+        CommandId.From("audio.switch-preferred-device"),
+        CommandId.From("audio.toggle-preferred-device"),
     ];
 
     /// <inheritdoc />
@@ -36,6 +38,9 @@ public sealed class AudioControlModule : IDeskPilotModule
         services.AddSingleton<ICommandHandler, ToggleMuteCommandHandler>();
         services.AddSingleton<ICommandHandler, SetDefaultDeviceCommandHandler>();
         services.AddSingleton<ICommandHandler, SavePreferredDeviceCommandHandler>();
+        services.AddSingleton<ICommandHandler, SwitchPreferredDeviceCommandHandler>();
+        services.AddSingleton<ICommandHandler, TogglePreferredDeviceCommandHandler>();
+        services.AddSingleton<ICommandDescriptionProvider, AudioCommandDescriptionProvider>();
     }
 
     /// <inheritdoc />
