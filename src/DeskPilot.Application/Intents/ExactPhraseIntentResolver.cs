@@ -35,7 +35,7 @@ public sealed class ExactPhraseIntentResolver : IIntentResolver
                 .Select(phrase => _matcher.MatchExact(normalizedInput, command, phrase)))
             .Where(static match => match is not null)
             .Select(static match => match!)
-            .GroupBy(static match => CreateIdentity(match.Request), StringComparer.Ordinal)
+            .GroupBy(static match => CommandRequestIdentity.Create(match.Request), StringComparer.Ordinal)
             .Select(static group => group.First().Request)
             .ToArray();
 
@@ -48,15 +48,4 @@ public sealed class ExactPhraseIntentResolver : IIntentResolver
         return Task.FromResult(result);
     }
 
-    private static string CreateIdentity(CommandRequest request)
-    {
-        var arguments = request.Arguments is null
-            ? string.Empty
-            : string.Join(
-                '\u001f',
-                request.Arguments
-                    .OrderBy(static item => item.Key, StringComparer.Ordinal)
-                    .Select(static item => $"{item.Key}\u001e{item.Value}"));
-        return $"{request.CommandId.Value}\u001d{arguments}";
-    }
 }

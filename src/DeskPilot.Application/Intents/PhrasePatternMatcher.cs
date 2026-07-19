@@ -4,7 +4,10 @@ using DeskPilot.Core.Commands;
 namespace DeskPilot.Application.Intents;
 
 /// <summary>Contains one trusted request matched from a finite phrase pattern.</summary>
-public sealed record PhraseMatch(CommandRequest Request, string ComparableText);
+public sealed record PhraseMatch(
+    CommandRequest Request,
+    string ComparableInput,
+    string ComparablePattern);
 
 /// <summary>Matches literal phrases and the approved percentage placeholder.</summary>
 public sealed class PhrasePatternMatcher
@@ -45,7 +48,10 @@ public sealed class PhrasePatternMatcher
         {
             var normalizedPattern = _normalizer.Normalize(phrase.Pattern);
             return string.Equals(normalizedInput, normalizedPattern, StringComparison.Ordinal)
-                ? new PhraseMatch(CreateRequest(command.CommandId, phrase.Arguments, null), normalizedPattern)
+                ? new PhraseMatch(
+                    CreateRequest(command.CommandId, phrase.Arguments, null),
+                    normalizedInput,
+                    normalizedPattern)
                 : null;
         }
 
@@ -85,8 +91,71 @@ public sealed class PhrasePatternMatcher
         }
 
         var request = CreateRequest(command.CommandId, phrase.Arguments, percentage);
-        var comparable = string.Join(' ', [.. prefixTokens, placeholder, .. suffixTokens]);
-        return new PhraseMatch(request, comparable);
+        var comparable = string.Join(' ', [.. prefixTokens, .. suffixTokens]);
+        return new PhraseMatch(request, comparable, comparable);
+    }
+
+    /// <summary>Creates safe fuzzy candidates without guessing a numeric value.</summary>
+    internal IReadOnlyCollection<PhraseMatch> CreateFuzzyCandidates(
+        string normalizedInput,
+        AvailableCommand command,
+        CommandPhrasePattern phrase)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(normalizedInput);
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(phrase);
+
+        var placeholder = CommandPhrasePattern.PercentagePlaceholder;
+        var placeholderIndex = phrase.Pattern.IndexOf(placeholder, StringComparison.Ordinal);
+        if (placeholderIndex < 0)
+        {
+            return
+            [
+                new PhraseMatch(
+                    CreateRequest(command.CommandId, phrase.Arguments, null),
+                    normalizedInput,
+                    _normalizer.Normalize(phrase.Pattern)),
+            ];
+        }
+
+        var prefix = NormalizeLiteral(phrase.Pattern[..placeholderIndex]);
+        var suffix = NormalizeLiteral(phrase.Pattern[(placeholderIndex + placeholder.Length)..]);
+        var inputTokens = CanonicalizePercentageWords(Split(normalizedInput));
+        var patternTokens = CanonicalizePercentageWords([.. Split(prefix), .. Split(suffix)]);
+        if (Split(suffix).Length == 0
+            && inputTokens.Length > 0
+            && string.Equals(inputTokens[^1], "процентов", StringComparison.Ordinal))
+        {
+            inputTokens = inputTokens[..^1];
+        }
+
+        var matches = new List<PhraseMatch>();
+        for (var start = 0; start < inputTokens.Length; start++)
+        {
+            for (var length = 1; length <= 2 && start + length <= inputTokens.Length; length++)
+            {
+                var numericText = string.Join(' ', inputTokens[start..(start + length)]);
+                if (!_numbers.TryParse(numericText, out var percentage))
+                {
+                    continue;
+                }
+
+                var remaining = inputTokens[..start]
+                    .Concat(inputTokens[(start + length)..])
+                    .ToArray();
+                if (ContainsNumber(remaining))
+                {
+                    continue;
+                }
+
+                matches.Add(new PhraseMatch(
+                    CreateRequest(command.CommandId, phrase.Arguments, percentage),
+                    string.Join(' ', remaining),
+                    string.Join(' ', patternTokens)));
+            }
+        }
+
+        return matches;
     }
 
     private CommandRequest CreateRequest(
@@ -126,4 +195,20 @@ public sealed class PhrasePatternMatcher
     private static bool EndsWith(string[] source, string[] suffix) =>
         suffix.Length == 0
         || source.AsSpan(source.Length - suffix.Length, suffix.Length).SequenceEqual(suffix);
+
+    private bool ContainsNumber(string[] tokens)
+    {
+        for (var start = 0; start < tokens.Length; start++)
+        {
+            for (var length = 1; length <= 2 && start + length <= tokens.Length; length++)
+            {
+                if (_numbers.TryParse(string.Join(' ', tokens[start..(start + length)]), out _))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
 }
