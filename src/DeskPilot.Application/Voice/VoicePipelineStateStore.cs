@@ -71,8 +71,21 @@ public sealed class VoicePipelineStateStore : IVoicePipelineStateSource
 {
     private readonly object _sync = new();
     private readonly Queue<VoicePipelineSnapshot> _pendingNotifications = [];
+    private readonly Action? _afterNormalDispatchOwnershipReleased;
     private VoicePipelineSnapshot _snapshot = VoicePipelineSnapshot.Disabled;
     private bool _isDispatching;
+
+    /// <summary>Creates an empty disabled state store.</summary>
+    public VoicePipelineStateStore()
+    {
+    }
+
+    internal VoicePipelineStateStore(Action afterNormalDispatchOwnershipReleased)
+    {
+        _afterNormalDispatchOwnershipReleased =
+            afterNormalDispatchOwnershipReleased
+            ?? throw new ArgumentNullException(nameof(afterNormalDispatchOwnershipReleased));
+    }
 
     /// <summary>Raised after a new immutable snapshot becomes current.</summary>
     public event EventHandler<VoicePipelineSnapshot>? SnapshotChanged;
@@ -110,28 +123,42 @@ public sealed class VoicePipelineStateStore : IVoicePipelineStateSource
             {
                 VoicePipelineSnapshot next;
                 EventHandler<VoicePipelineSnapshot>? subscribers;
+                var completedNormally = false;
                 lock (_sync)
                 {
                     if (_pendingNotifications.Count == 0)
                     {
                         _isDispatching = false;
-                        return;
+                        completedNormally = true;
+                        next = default!;
+                        subscribers = null;
                     }
+                    else
+                    {
+                        next = _pendingNotifications.Dequeue();
+                        subscribers = SnapshotChanged;
+                    }
+                }
 
-                    next = _pendingNotifications.Dequeue();
-                    subscribers = SnapshotChanged;
+                if (completedNormally)
+                {
+                    break;
                 }
 
                 NotifySubscribers(subscribers, next);
             }
         }
-        finally
+        catch (Exception exception) when (VoiceExceptionPolicy.IsFatal(exception))
         {
             lock (_sync)
             {
                 _isDispatching = false;
             }
+
+            throw;
         }
+
+        _afterNormalDispatchOwnershipReleased?.Invoke();
     }
 
     private void NotifySubscribers(

@@ -11,6 +11,14 @@ public sealed class VoicePipelineStateStoreTests
     private static readonly MethodInfo PublishMethod = typeof(VoicePipelineStateStore)
         .GetMethod("Publish", BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("VoicePipelineStateStore.Publish was not found.");
+    private static readonly ConstructorInfo InterleavingConstructor =
+        typeof(VoicePipelineStateStore).GetConstructor(
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            [typeof(Action)],
+            modifiers: null)
+        ?? throw new InvalidOperationException(
+            "VoicePipelineStateStore interleaving constructor was not found.");
 
     [Fact]
     public void Publish_ReentrantNotificationPreservesSubscriberOrder()
@@ -116,6 +124,89 @@ public sealed class VoicePipelineStateStoreTests
         store.Snapshot.Should().BeSameAs(final);
     }
 
+    [Fact(Timeout = 5_000)]
+    public async Task Publish_NormalOwnershipReleaseCannotResetNextDispatcherOwnership()
+    {
+        var first = VoicePipelineSnapshot.Disabled with { State = VoiceAssistantState.WaitingForWakeWord };
+        var second = VoicePipelineSnapshot.Disabled with { State = VoiceAssistantState.WakeWordDetected };
+        var third = VoicePipelineSnapshot.Disabled with { State = VoiceAssistantState.ListeningForCommand };
+        var firstReleaseEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var allowFirstDispatcherReturn = new ManualResetEventSlim();
+        using var allowSecondSubscriberReturn = new ManualResetEventSlim();
+        var normalReleaseCount = 0;
+        var store = CreateStoreWithInterleaving(() =>
+        {
+            if (Interlocked.Increment(ref normalReleaseCount) == 1)
+            {
+                firstReleaseEntered.TrySetResult();
+                if (!allowFirstDispatcherReturn.Wait(TimeSpan.FromSeconds(2)))
+                {
+                    throw new TimeoutException("The first dispatcher was not released by the test.");
+                }
+            }
+        });
+        var secondSubscriberEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var observed = new System.Collections.Concurrent.ConcurrentQueue<VoiceAssistantState>();
+        var activeSubscribers = 0;
+        var maxActiveSubscribers = 0;
+        store.SnapshotChanged += (_, snapshot) =>
+        {
+            var active = Interlocked.Increment(ref activeSubscribers);
+            UpdateMaximum(ref maxActiveSubscribers, active);
+            observed.Enqueue(snapshot.State);
+            try
+            {
+                if (ReferenceEquals(snapshot, second))
+                {
+                    secondSubscriberEntered.TrySetResult();
+                    if (!allowSecondSubscriberReturn.Wait(TimeSpan.FromSeconds(2)))
+                    {
+                        throw new TimeoutException("The second subscriber was not released by the test.");
+                    }
+                }
+            }
+            finally
+            {
+                Interlocked.Decrement(ref activeSubscribers);
+            }
+        };
+
+        var firstPublish = Task.Run(() => Publish(store, first));
+        Task? secondPublish = null;
+        try
+        {
+            await firstReleaseEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            secondPublish = Task.Run(() => Publish(store, second));
+            await secondSubscriberEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            allowFirstDispatcherReturn.Set();
+            await firstPublish.WaitAsync(TimeSpan.FromSeconds(2));
+
+            await Task.Run(() => Publish(store, third)).WaitAsync(TimeSpan.FromSeconds(2));
+            allowSecondSubscriberReturn.Set();
+            await secondPublish.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            allowFirstDispatcherReturn.Set();
+            allowSecondSubscriberReturn.Set();
+            await firstPublish.WaitAsync(TimeSpan.FromSeconds(2));
+            if (secondPublish is not null)
+            {
+                await secondPublish.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+        }
+
+        maxActiveSubscribers.Should().Be(1);
+        observed.Should().Equal(
+            VoiceAssistantState.WaitingForWakeWord,
+            VoiceAssistantState.WakeWordDetected,
+            VoiceAssistantState.ListeningForCommand);
+        store.Snapshot.Should().BeSameAs(third);
+    }
+
     private static void Publish(VoicePipelineStateStore store, VoicePipelineSnapshot snapshot) =>
         PublishMethod.Invoke(store, [snapshot]);
 
@@ -132,6 +223,24 @@ public sealed class VoicePipelineStateStoreTests
             System.Runtime.ExceptionServices.ExceptionDispatchInfo
                 .Capture(exception.InnerException)
                 .Throw();
+        }
+    }
+
+    private static VoicePipelineStateStore CreateStoreWithInterleaving(Action callback) =>
+        (VoicePipelineStateStore)InterleavingConstructor.Invoke([callback]);
+
+    private static void UpdateMaximum(ref int maximum, int candidate)
+    {
+        var observed = Volatile.Read(ref maximum);
+        while (candidate > observed)
+        {
+            var previous = Interlocked.CompareExchange(ref maximum, candidate, observed);
+            if (previous == observed)
+            {
+                return;
+            }
+
+            observed = previous;
         }
     }
 }
