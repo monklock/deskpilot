@@ -15,6 +15,20 @@ namespace DeskPilot.Desktop.Tests;
 
 public sealed class DesktopHostRegistrationTests
 {
+    [Theory]
+    [InlineData(true, null, true)]
+    [InlineData(true, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(false, null, false)]
+    public void ShouldEnableVoicePipeline_UsesInstalledModelsWhenSeedInitializationIsUnavailable(
+        bool voiceEnabled,
+        bool? seedInitializationSucceeded,
+        bool expected)
+    {
+        App.ShouldEnableVoicePipeline(voiceEnabled, seedInitializationSucceeded)
+            .Should().Be(expected);
+    }
+
     [Fact]
     public void CreateHost_RegistersCompleteVoiceGraphWithoutStartingNativeProviders()
     {
