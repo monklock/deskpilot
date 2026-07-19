@@ -32,17 +32,15 @@ public sealed class VoskRecognizerClient : IVoskRecognizerClient
         ArgumentException.ThrowIfNullOrWhiteSpace(modelPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(grammarJson);
 
-        global::Vosk.Model? model = null;
-        global::Vosk.VoskRecognizer? recognizer = null;
+        VoskNativeModel? model = null;
+        Utf8VoskNativeRecognizer? recognizer = null;
         try
         {
-            model = new global::Vosk.Model(modelPath);
-            recognizer = new global::Vosk.VoskRecognizer(model, 16_000f, grammarJson);
-            recognizer.SetWords(true);
-            recognizer.SetPartialWords(false);
+            model = VoskNativeModel.Load(modelPath);
+            recognizer = new Utf8VoskNativeRecognizer(model.Handle, grammarJson);
 
             _model = model;
-            _recognizer = new NativeVoskRecognizer(recognizer);
+            _recognizer = recognizer;
         }
         catch
         {
@@ -93,18 +91,4 @@ public sealed class VoskRecognizerClient : IVoskRecognizerClient
         }
     }
 
-    private sealed class NativeVoskRecognizer(
-        global::Vosk.VoskRecognizer recognizer) : IVoskNativeRecognizer
-    {
-        public bool AcceptWaveform(byte[] buffer, int length) =>
-            recognizer.AcceptWaveform(buffer, length);
-
-        public string Result() => recognizer.Result();
-
-        public string PartialResult() => recognizer.PartialResult();
-
-        public string FinalResult() => recognizer.FinalResult();
-
-        public void Dispose() => recognizer.Dispose();
-    }
 }

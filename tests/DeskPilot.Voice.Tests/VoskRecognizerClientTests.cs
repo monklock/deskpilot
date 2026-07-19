@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Runtime.InteropServices;
 using DeskPilot.Voice.Vosk;
 using FluentAssertions;
 using Xunit;
@@ -6,6 +8,22 @@ namespace DeskPilot.Voice.Tests;
 
 public sealed class VoskRecognizerClientTests
 {
+    [Theory]
+    [InlineData(nameof(VoskNativeMethods.ModelNew), "modelPath")]
+    [InlineData(nameof(VoskNativeMethods.RecognizerNewGrammar), "grammar")]
+    public void NativeTextParameters_UseExplicitUtf8Marshalling(
+        string methodName,
+        string parameterName)
+    {
+        var method = typeof(VoskNativeMethods).GetMethod(
+            methodName,
+            BindingFlags.Static | BindingFlags.NonPublic);
+        var parameter = method!.GetParameters().Single(candidate => candidate.Name == parameterName);
+
+        parameter.GetCustomAttribute<MarshalAsAttribute>()!.Value
+            .Should().Be(UnmanagedType.LPUTF8Str);
+    }
+
     [Fact]
     public void Accept_FinalNativeResult_ParsesResultAndCopiesOnlyCurrentFrame()
     {
