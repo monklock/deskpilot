@@ -55,7 +55,10 @@ public sealed class VoskRecognitionJsonParserTests
     {
         var result = VoskRecognitionJsonParser.Parse(json, isFinal: true);
 
-        result.Should().Be(new VoskRecognition("альфа", 0, true));
+        result.Text.Should().Be("альфа");
+        result.Confidence.Should().Be(0);
+        result.IsFinal.Should().BeTrue();
+        result.Words.Should().BeEmpty();
     }
 
     public static TheoryData<string> InvalidTimedWordPayloads => new()
@@ -95,7 +98,9 @@ public sealed class VoskRecognitionJsonParserTests
 
         var result = VoskRecognitionJsonParser.Parse(json, isFinal: false);
 
-        result.Should().Be(new VoskRecognition("альфа", 0, false));
+        result.Text.Should().Be("альфа");
+        result.Confidence.Should().Be(0);
+        result.IsFinal.Should().BeFalse();
         result.Words.Should().BeEmpty();
     }
 

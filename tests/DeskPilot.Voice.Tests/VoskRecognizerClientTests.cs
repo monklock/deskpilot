@@ -55,7 +55,10 @@ public sealed class VoskRecognizerClientTests
 
         var result = client.Accept(new byte[] { 0, 0 });
 
-        result.Should().Be(new VoskRecognition("альфа", 0, false));
+        result.Text.Should().Be("альфа");
+        result.Confidence.Should().Be(0);
+        result.IsFinal.Should().BeFalse();
+        result.Words.Should().BeEmpty();
         native.ResultCallCount.Should().Be(0);
         native.PartialResultCallCount.Should().Be(1);
     }

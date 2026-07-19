@@ -11,18 +11,16 @@ public sealed class VoskWakeWordProviderTests
     [Fact]
     public async Task WaitForDetectionAsync_Cursor_MapsTimedWakeWordToAbsoluteOffsets()
     {
-        var recognizer = new FakeVoskRecognizerClient(
-            TimedRecognition("альфа", 0.94, 0.50, 1.10));
+        var frames = CreateContiguousFrames(startSampleOffset: 32_000, count: 60);
+        var recognitions = Enumerable.Range(0, frames.Length - 1)
+            .Select(_ => new VoskRecognition(string.Empty, 0, false))
+            .Append(TimedRecognition("альфа", 0.94, 0.50, 1.10))
+            .ToArray();
+        var recognizer = new FakeVoskRecognizerClient(recognitions);
         var provider = new VoskWakeWordProvider(
             "wake-model",
             new FakeVoskRecognizerClientFactory(recognizer));
-        await using var audio = FakeVoiceAudioCursor.WithFrames(
-            32_000,
-            new SequencedAudioFrame(
-                new byte[] { 0, 0 },
-                TimeSpan.FromMilliseconds(20),
-                32_000,
-                51_200));
+        await using var audio = FakeVoiceAudioCursor.WithFrames(32_000, frames);
 
         var result = await provider.WaitForDetectionAsync(
             audio,
@@ -36,6 +34,14 @@ public sealed class VoskWakeWordProviderTests
             49_600,
             51_200));
         recognizer.DisposeCount.Should().Be(1);
+        recognizer.AcceptCount.Should().Be(60);
+        recognizer.AcceptedPcmLengths.Should().OnlyContain(length => length == 640);
+        frames.Should().OnlyContain(frame =>
+            frame.Pcm16.Length == 640
+            && frame.Duration == TimeSpan.FromMilliseconds(20)
+            && frame.EndSampleOffset - frame.StartSampleOffset == 320);
+        frames[^1].StartSampleOffset.Should().Be(50_880);
+        frames[^1].EndSampleOffset.Should().Be(51_200);
         audio.DisposeCount.Should().Be(0);
     }
 
@@ -48,11 +54,7 @@ public sealed class VoskWakeWordProviderTests
                 new FakeVoskRecognizerClient(TimedRecognition("альфа", 0.94, 0.50, 1.10))));
         await using var audio = FakeVoiceAudioCursor.WithFrames(
             32_000,
-            new SequencedAudioFrame(
-                new byte[] { 0, 0 },
-                TimeSpan.FromMilliseconds(20),
-                32_000,
-                48_000));
+            CreateFrame(32_000, 32_320));
 
         var action = () => provider.WaitForDetectionAsync(
             audio,
@@ -61,6 +63,38 @@ public sealed class VoskWakeWordProviderTests
 
         await action.Should().ThrowAsync<InvalidDataException>()
             .WithMessage("Vosk returned invalid wake-word timing.*");
+        audio.DisposeCount.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(32_640, 32_960)]
+    [InlineData(32_160, 32_480)]
+    [InlineData(31_680, 32_000)]
+    [InlineData(32_320, 32_320)]
+    public async Task WaitForDetectionAsync_Cursor_InvalidFrameSequenceRejectsBeforeRecognizer(
+        long invalidStartSampleOffset,
+        long invalidEndSampleOffset)
+    {
+        var recognizer = new FakeVoskRecognizerClient(
+            new VoskRecognition(string.Empty, 0, false),
+            TimedRecognition("альфа", 0.94, 0.01, 0.02));
+        var provider = new VoskWakeWordProvider(
+            "wake-model",
+            new FakeVoskRecognizerClientFactory(recognizer));
+        await using var audio = FakeVoiceAudioCursor.WithFrames(
+            32_000,
+            CreateFrame(32_000, 32_320),
+            CreateFrame(invalidStartSampleOffset, invalidEndSampleOffset));
+
+        var action = () => provider.WaitForDetectionAsync(
+            audio,
+            new WakeWordOptions("альфа", 0.80),
+            CancellationToken.None);
+
+        await action.Should().ThrowAsync<InvalidDataException>()
+            .WithMessage("Vosk returned invalid wake-word timing.*");
+        recognizer.AcceptCount.Should().Be(1);
+        recognizer.DisposeCount.Should().Be(1);
         audio.DisposeCount.Should().Be(0);
     }
 
@@ -112,7 +146,7 @@ public sealed class VoskWakeWordProviderTests
     }
 
     [Fact]
-    public async Task WaitForDetectionAsync_Cursor_RoundsFractionalSamplesAwayFromZero()
+    public async Task WaitForDetectionAsync_Cursor_RoundsFractionalTimeToNearestWholeSample()
     {
         var recognition = new VoskRecognition(
             "альфа",
@@ -124,11 +158,7 @@ public sealed class VoskWakeWordProviderTests
             new FakeVoskRecognizerClientFactory(new FakeVoskRecognizerClient(recognition)));
         await using var audio = FakeVoiceAudioCursor.WithFrames(
             12_345,
-            new SequencedAudioFrame(
-                new byte[] { 0, 0 },
-                TimeSpan.FromMilliseconds(20),
-                12_345,
-                12_665));
+            CreateFrame(12_345, 12_665));
 
         var result = await provider.WaitForDetectionAsync(
             audio,
@@ -149,11 +179,7 @@ public sealed class VoskWakeWordProviderTests
                 new FakeVoskRecognizerClient(TimedRecognition("альфа", 0.94, 0.01, 0.02))));
         await using var audio = FakeVoiceAudioCursor.WithFrames(
             long.MaxValue - 100,
-            new SequencedAudioFrame(
-                new byte[] { 0, 0 },
-                TimeSpan.FromMilliseconds(20),
-                long.MaxValue - 100,
-                long.MaxValue));
+            CreateFrame(long.MaxValue - 100, long.MaxValue));
 
         var action = () => provider.WaitForDetectionAsync(
             audio,
@@ -178,8 +204,8 @@ public sealed class VoskWakeWordProviderTests
             new FakeVoskRecognizerClientFactory(recognizer));
         await using var audio = FakeVoiceAudioCursor.WithFrames(
             5_000,
-            new SequencedAudioFrame(new byte[] { 0, 0 }, TimeSpan.FromMilliseconds(20), 5_000, 5_320),
-            new SequencedAudioFrame(new byte[] { 0, 0 }, TimeSpan.FromMilliseconds(20), 5_320, 5_640));
+            CreateFrame(5_000, 5_320),
+            CreateFrame(5_320, 5_640));
 
         var result = await provider.WaitForDetectionAsync(
             audio,
@@ -188,7 +214,77 @@ public sealed class VoskWakeWordProviderTests
 
         result.Should().Be(new WakeWordDetectionResult("альфа", 0.92, 5_160, 5_480, 5_640));
         recognizer.AcceptCount.Should().Be(2);
+        recognizer.AcceptedPcmLengths.Should().Equal(640, 640);
         recognizer.CompleteCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task WaitForDetectionAsync_Cursor_TrimsConfiguredPhraseAndMatchesFinalCaseInsensitively()
+    {
+        var recognition = new VoskRecognition(
+            "  АЛЬФА  ",
+            0.94,
+            true,
+            [new VoskWordTiming("АЛЬФА", 0.94, TimeSpan.FromSeconds(0.005), TimeSpan.FromSeconds(0.010))]);
+        var factory = new FakeVoskRecognizerClientFactory(new FakeVoskRecognizerClient(recognition));
+        var provider = new VoskWakeWordProvider("wake-model", factory);
+        await using var audio = FakeVoiceAudioCursor.WithFrames(
+            8_000,
+            CreateFrame(8_000, 8_320));
+
+        var result = await provider.WaitForDetectionAsync(
+            audio,
+            new WakeWordOptions("  альфа  ", 0.80),
+            CancellationToken.None);
+
+        result.Should().Be(new WakeWordDetectionResult("альфа", 0.94, 8_080, 8_160, 8_320));
+        factory.GrammarJson.Should().Be("[\"альфа\"]");
+        audio.DisposeCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task WaitForDetectionAsync_Cursor_RecognizerFailsDisposesRecognizerButNotCursor()
+    {
+        var recognizer = new FakeVoskRecognizerClient(new InvalidOperationException("native failure"));
+        var provider = new VoskWakeWordProvider(
+            "wake-model",
+            new FakeVoskRecognizerClientFactory(recognizer));
+        await using var audio = FakeVoiceAudioCursor.WithFrames(
+            8_000,
+            CreateFrame(8_000, 8_320));
+
+        var action = () => provider.WaitForDetectionAsync(
+            audio,
+            new WakeWordOptions("альфа", 0.80),
+            CancellationToken.None);
+
+        await action.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("native failure");
+        recognizer.DisposeCount.Should().Be(1);
+        audio.DisposeCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task WaitForDetectionAsync_CursorEnumerationFailsDisposesRecognizerButNotCursor()
+    {
+        var recognizer = new FakeVoskRecognizerClient();
+        var provider = new VoskWakeWordProvider(
+            "wake-model",
+            new FakeVoskRecognizerClientFactory(recognizer));
+        await using var audio = FakeVoiceAudioCursor.Failing(
+            startSampleOffset: 8_000,
+            new AudioCaptureException(AudioInputResultCode.Disconnected, "capture failure"));
+
+        var action = () => provider.WaitForDetectionAsync(
+            audio,
+            new WakeWordOptions("альфа", 0.80),
+            CancellationToken.None);
+
+        await action.Should().ThrowAsync<AudioCaptureException>()
+            .Where(exception => exception.Code == AudioInputResultCode.Disconnected);
+        recognizer.AcceptCount.Should().Be(0);
+        recognizer.DisposeCount.Should().Be(1);
+        audio.DisposeCount.Should().Be(0);
     }
 
     [Fact]
@@ -469,6 +565,27 @@ public sealed class VoskWakeWordProviderTests
                     TimeSpan.FromSeconds(endSeconds)),
             ]);
 
+    private static SequencedAudioFrame[] CreateContiguousFrames(
+        long startSampleOffset,
+        int count) =>
+        Enumerable.Range(0, count)
+            .Select(index => CreateFrame(
+                checked(startSampleOffset + (index * 320L)),
+                checked(startSampleOffset + ((index + 1) * 320L))))
+            .ToArray();
+
+    private static SequencedAudioFrame CreateFrame(
+        long startSampleOffset,
+        long endSampleOffset)
+    {
+        var sampleCount = checked((int)Math.Max(0, endSampleOffset - startSampleOffset));
+        return new SequencedAudioFrame(
+            new byte[checked(sampleCount * sizeof(short))],
+            TimeSpan.FromSeconds(sampleCount / 16_000d),
+            startSampleOffset,
+            endSampleOffset);
+    }
+
     private sealed class FakeVoskRecognizerClient : IVoskRecognizerClient
     {
         private readonly Queue<VoskRecognition> _results;
@@ -489,12 +606,15 @@ public sealed class VoskWakeWordProviderTests
 
         public int CompleteCount { get; private set; }
 
+        public List<int> AcceptedPcmLengths { get; } = [];
+
         public VoskRecognition Completion { get; init; } =
             new(string.Empty, 0, true);
 
         public VoskRecognition Accept(ReadOnlyMemory<byte> pcm16)
         {
             AcceptCount++;
+            AcceptedPcmLengths.Add(pcm16.Length);
             if (_failure is not null)
             {
                 throw _failure;
@@ -590,15 +710,18 @@ public sealed class VoskWakeWordProviderTests
     {
         private readonly IReadOnlyList<SequencedAudioFrame> _frames;
         private readonly bool _waitForCancellation;
+        private readonly Exception? _failure;
 
         private FakeVoiceAudioCursor(
             long startSampleOffset,
             IReadOnlyList<SequencedAudioFrame> frames,
-            bool waitForCancellation)
+            bool waitForCancellation,
+            Exception? failure = null)
         {
             StartSampleOffset = startSampleOffset;
             _frames = frames;
             _waitForCancellation = waitForCancellation;
+            _failure = failure;
         }
 
         public AudioFormat Format => AudioFormat.Pcm16KhzMono;
@@ -615,6 +738,11 @@ public sealed class VoskWakeWordProviderTests
         public static FakeVoiceAudioCursor UntilCancelled(long startSampleOffset) =>
             new(startSampleOffset, [], waitForCancellation: true);
 
+        public static FakeVoiceAudioCursor Failing(
+            long startSampleOffset,
+            Exception failure) =>
+            new(startSampleOffset, [], waitForCancellation: false, failure);
+
         public async IAsyncEnumerable<SequencedAudioFrame> ReadFramesAsync(
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
@@ -623,6 +751,11 @@ public sealed class VoskWakeWordProviderTests
                 cancellationToken.ThrowIfCancellationRequested();
                 await Task.Yield();
                 yield return frame;
+            }
+
+            if (_failure is not null)
+            {
+                throw _failure;
             }
 
             if (_waitForCancellation)
