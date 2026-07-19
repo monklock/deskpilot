@@ -1,7 +1,11 @@
+using DeskPilot.Application.Commands;
+using DeskPilot.Application.Intents;
 using DeskPilot.Application.Voice;
+using DeskPilot.Core.Commands;
 using DeskPilot.Desktop.Services;
 using DeskPilot.Desktop.ViewModels;
 using DeskPilot.Voice.Abstractions;
+using DeskPilot.Voice.AudioCapture;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -12,6 +16,20 @@ namespace DeskPilot.Desktop.Tests;
 
 public sealed class DesktopHostRegistrationTests
 {
+    [Theory]
+    [InlineData(true, null, true)]
+    [InlineData(true, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(false, null, false)]
+    public void ShouldEnableVoicePipeline_UsesInstalledModelsWhenSeedInitializationIsUnavailable(
+        bool voiceEnabled,
+        bool? seedInitializationSucceeded,
+        bool expected)
+    {
+        App.ShouldEnableVoicePipeline(voiceEnabled, seedInitializationSucceeded)
+            .Should().Be(expected);
+    }
+
     [Fact]
     public void CreateHost_RegistersCompleteVoiceGraphWithoutStartingNativeProviders()
     {
@@ -20,8 +38,27 @@ public sealed class DesktopHostRegistrationTests
         host.Services.GetRequiredService<IVoicePipelineController>().Should().NotBeNull();
         host.Services.GetRequiredService<IVoicePipelineStateSource>().Should().NotBeNull();
         host.Services.GetRequiredService<IVoiceModelActivationGate>().Should().NotBeNull();
+        host.Services.GetRequiredService<IBufferedVoiceCaptureSessionFactory>()
+            .Should().BeOfType<BufferedVoiceCaptureSessionFactory>();
+        host.Services.GetRequiredService<IVoiceActivityDetector>()
+            .Should().BeOfType<AdaptiveVoiceActivityDetector>();
         host.Services.GetRequiredService<VoiceControlViewModel>().Should().NotBeNull();
         host.Services.GetRequiredService<VoiceModelManagerViewModel>().Should().NotBeNull();
+    }
+
+    [Fact]
+    public void CreateHost_ResolvesVoiceCommandExecutionGraph()
+    {
+        using var host = App.CreateHost();
+
+        host.Services.GetRequiredService<ICommandCatalog>()
+            .Commands.Should().NotBeEmpty();
+        host.Services.GetRequiredService<IIntentResolver>()
+            .Should().BeOfType<CompositeIntentResolver>();
+        host.Services.GetRequiredService<IVoiceCommandExecutionService>()
+            .Should().BeOfType<VoiceCommandExecutionService>();
+        host.Services.GetRequiredService<IVoicePipelineController>()
+            .Should().BeOfType<VoicePipelineCoordinator>();
     }
 
     [Fact]

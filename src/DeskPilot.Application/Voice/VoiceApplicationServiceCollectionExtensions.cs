@@ -1,3 +1,5 @@
+using DeskPilot.Application.Commands;
+using DeskPilot.Application.Intents;
 using DeskPilot.Voice.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -13,6 +15,20 @@ public static class VoiceApplicationServiceCollectionExtensions
         services.AddSingleton<VoicePipelineStateStore>();
         services.AddSingleton<IVoicePipelineStateSource>(provider =>
             provider.GetRequiredService<VoicePipelineStateStore>());
+        services.AddSingleton<ICommandTextNormalizer, CommandTextNormalizer>();
+        services.AddSingleton<RussianVolumeNumberParser>();
+        services.AddSingleton<PhrasePatternMatcher>();
+        services.AddSingleton<ExactPhraseIntentResolver>();
+        services.AddSingleton(provider => new FuzzyPhraseIntentResolver(
+            provider.GetRequiredService<ICommandTextNormalizer>(),
+            provider.GetRequiredService<PhrasePatternMatcher>(),
+            0.86,
+            0.08));
+        services.AddSingleton<IIntentResolver>(provider => new CompositeIntentResolver(
+            provider.GetRequiredService<ExactPhraseIntentResolver>(),
+            provider.GetRequiredService<FuzzyPhraseIntentResolver>()));
+        services.AddSingleton<ICommandCatalog, CommandCatalog>();
+        services.AddSingleton<IVoiceCommandExecutionService, VoiceCommandExecutionService>();
         services.AddSingleton<VoicePipelineCoordinator>();
         services.AddSingleton<IVoicePipelineController>(provider =>
             provider.GetRequiredService<VoicePipelineCoordinator>());

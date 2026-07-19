@@ -1,7 +1,9 @@
 using DeskPilot.Application.Voice;
+using DeskPilot.Core.Commands;
 using DeskPilot.Core.Voice;
 using DeskPilot.Voice.Abstractions;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Xunit;
 
@@ -10,341 +12,1589 @@ namespace DeskPilot.Application.Tests;
 public sealed class VoicePipelineCoordinatorTests
 {
     [Fact]
-    public async Task RunSingleCycleAsync_PublishesTextWithoutDispatchingACommand()
+    public async Task RunSingleCycleAsync_UsesWakeEndCursorWithoutReopeningMicrophone()
+    {
+        var fixture = PipelineFixture.Create();
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.BufferedCaptures.OpenCount.Should().Be(1);
+        fixture.BufferedCaptures.OpenedEndpoints.Should().Equal("bt-mic");
+        fixture.Buffered.OpenedOffsets.Should().Equal(0, 24_000);
+        await fixture.Signals.DidNotReceive()
+            .PlayAsync(VoiceSignal.Ready, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_PublishesListeningBeforeCaptureAndEndpointingFromProgressOnce()
     {
         var fixture = PipelineFixture.Create();
         var history = new List<VoiceAssistantState>();
         fixture.State.SnapshotChanged += (_, snapshot) => history.Add(snapshot.State);
+        fixture.VoiceActivity.CaptureAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<AmbientNoiseSnapshot>(),
+                Arg.Any<VoiceActivityOptions>(),
+                Arg.Any<Action<VoiceActivityProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.ListeningForCommand);
+                var progress = call.ArgAt<Action<VoiceActivityProgress>>(3);
+                progress(new VoiceActivityProgress(24_320, 0.01, 0.25));
+                progress(new VoiceActivityProgress(24_320, 0.01, 0.25));
+                fixture.Buffered.LatestSampleOffset = 40_000;
+                return SuccessfulActivity();
+            });
 
         await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
-        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.WaitingForWakeWord);
-        fixture.State.Snapshot.LastRecognizedText.Should().Be("сделай громче");
-        fixture.State.Snapshot.LastRecognitionConfidence.Should().Be(0.91);
         history.Should().ContainInOrder(
             VoiceAssistantState.WaitingForWakeWord,
             VoiceAssistantState.WakeWordDetected,
             VoiceAssistantState.ListeningForCommand,
             VoiceAssistantState.DetectingSpeechEnd,
             VoiceAssistantState.RecognizingCommand,
+            VoiceAssistantState.ResolvingCommand,
+            VoiceAssistantState.ExecutingCommand,
             VoiceAssistantState.Cooldown,
             VoiceAssistantState.WaitingForWakeWord);
-        fixture.WakeCapture.DisposeCount.Should().Be(1);
-        fixture.CommandCapture.DisposeCount.Should().Be(1);
+        history.Count(state => state == VoiceAssistantState.DetectingSpeechEnd).Should().Be(1);
     }
 
-    [Fact]
-    public async Task RunSingleCycleAsync_DisposesCommandCaptureBeforeRecognition()
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_PassesExactAmbientVadAndWhisperDefaults()
     {
         var fixture = PipelineFixture.Create();
+        fixture.VoiceActivity.CaptureAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<AmbientNoiseSnapshot>(),
+                Arg.Any<VoiceActivityOptions>(),
+                Arg.Any<Action<VoiceActivityProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var cursor = (TestVoiceAudioCursor)call.ArgAt<IVoiceAudioCursor>(0);
+                call.ArgAt<AmbientNoiseSnapshot>(1).Should().Be(
+                    new AmbientNoiseSnapshot(0.01, TimeSpan.FromSeconds(3), 150));
+                call.ArgAt<VoiceActivityOptions>(2).Should().Be(new VoiceActivityOptions(
+                    TimeSpan.FromMilliseconds(300),
+                    TimeSpan.FromMilliseconds(150),
+                    TimeSpan.FromMilliseconds(4_000),
+                    TimeSpan.FromMilliseconds(1_200),
+                    TimeSpan.FromMilliseconds(10_000),
+                    fixture.SettingsValue.VoiceActivitySensitivity));
+                call.ArgAt<Action<VoiceActivityProgress>>(3)(
+                    new VoiceActivityProgress(cursor.StartSampleOffset + 320, 0.01, 0.25));
+                cursor.Owner.LatestSampleOffset = cursor.StartSampleOffset + 16_000;
+                return SuccessfulActivity(cursor.StartSampleOffset);
+            });
         fixture.Speech.RecognizeAsync(
                 Arg.Any<CapturedCommandAudio>(),
                 Arg.Any<SpeechRecognitionOptions>(),
                 Arg.Any<CancellationToken>())
             .Returns(call =>
             {
-                fixture.CommandCapture.DisposeCount.Should().Be(1);
+                call.ArgAt<SpeechRecognitionOptions>(1).Should().Be(
+                    new SpeechRecognitionOptions("ru", 0.70));
+                return new SpeechRecognitionResult("сделай громче", 0.91, true);
+            });
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        await fixture.Commands.Received(1)
+            .ExecuteAsync("сделай громче", Arg.Any<Action<VoiceCommandExecutionProgress>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_DisposesCommandCursorBeforeWhisperAndSessionAfterCooldown()
+    {
+        var fixture = PipelineFixture.Create();
+        fixture.Speech.RecognizeAsync(
+                Arg.Any<CapturedCommandAudio>(),
+                Arg.Any<SpeechRecognitionOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                fixture.Buffered.CursorAt(24_000).DisposeCount.Should().Be(1);
+                fixture.Buffered.DisposeCount.Should().Be(0);
                 return new SpeechRecognitionResult("команда", 0.90, true);
             });
 
         await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
-        fixture.State.Snapshot.LastRecognizedText.Should().Be("команда");
+        fixture.Buffered.CursorAt(0).DisposeCount.Should().Be(1);
+        fixture.Buffered.CursorAt(24_000).DisposeCount.Should().Be(1);
+        fixture.Buffered.DisposeCount.Should().Be(1);
     }
 
     [Fact]
-    public async Task RunSingleCycleAsync_SelectedMicrophoneUnavailable_PublishesSafeError()
+    public async Task RunSingleCycleAsync_NoSpeechNeverEndpointsRecognizesOrDispatches()
     {
         var fixture = PipelineFixture.Create();
-        fixture.Devices.ResolveAsync("bt-mic", Arg.Any<CancellationToken>()).Returns(
-            new AudioInputResolution(AudioInputResultCode.SelectedDeviceUnavailable, null, "private device detail"));
+        var history = new List<VoiceAssistantState>();
+        fixture.State.SnapshotChanged += (_, snapshot) => history.Add(snapshot.State);
+        fixture.VoiceActivity.CaptureAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<AmbientNoiseSnapshot>(),
+                Arg.Any<VoiceActivityOptions>(),
+                Arg.Any<Action<VoiceActivityProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(NoSpeechActivity());
 
         await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
-        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Error);
-        fixture.State.Snapshot.ErrorCode.Should().Be("microphone-unavailable");
-        fixture.State.Snapshot.SafeMessage.Should().Contain("Bluetooth");
-        fixture.State.Snapshot.SafeMessage.Should().NotContain("private device detail");
-        await fixture.Captures.DidNotReceiveWithAnyArgs().OpenAsync(default!, default);
+        history.Should().NotContain(VoiceAssistantState.DetectingSpeechEnd);
+        fixture.State.Snapshot.ErrorCode.Should().Be("speech-not-detected");
+        fixture.State.Snapshot.SafeMessage.Should().Be("Команда не распознана");
+        await fixture.Speech.DidNotReceiveWithAnyArgs()
+            .RecognizeAsync(default!, default!, default);
+        await fixture.Commands.DidNotReceiveWithAnyArgs()
+            .ExecuteAsync(default!, default!, default);
     }
 
     [Fact]
-    public async Task RunSingleCycleAsync_ActiveModelMissing_PublishesSafeError()
+    public async Task RunSingleCycleAsync_BufferOverrunPublishesExactSafeFailureAndDispatchesNothing()
     {
         var fixture = PipelineFixture.Create();
-        fixture.Models.GetActiveAsync(VoiceModelProvider.CommandWhisper, Arg.Any<CancellationToken>())
-            .Returns((InstalledVoiceModel?)null);
+        fixture.VoiceActivity.CaptureAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<AmbientNoiseSnapshot>(),
+                Arg.Any<VoiceActivityOptions>(),
+                Arg.Any<Action<VoiceActivityProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns<VoiceActivityResult>(_ => throw new AudioCaptureException(
+                AudioInputResultCode.BufferOverrun,
+                "private offset 123456"));
 
         await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
-        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Error);
-        fixture.State.Snapshot.ErrorCode.Should().Be("model-unavailable");
-        fixture.State.Snapshot.SafeMessage.Should().Contain("модель");
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.WaitingForWakeWord);
+        fixture.State.Snapshot.ErrorCode.Should().Be("voice-audio-overrun");
+        fixture.State.Snapshot.SafeMessage.Should().Be(
+            "Не удалось сохранить начало команды. Повторите команду.");
+        await fixture.Speech.DidNotReceiveWithAnyArgs()
+            .RecognizeAsync(default!, default!, default);
+        await fixture.Commands.DidNotReceiveWithAnyArgs()
+            .ExecuteAsync(default!, default!, default);
     }
 
-    [Fact]
-    public async Task RunSingleCycleAsync_ActiveModelFilesMissing_PublishesModelUnavailable()
+    [Fact(Timeout = 5_000)]
+    public async Task EnabledPipeline_DetectionBeyondLastProviderFrameIsRejectedAndNextCycleUsesSameLiveSession()
     {
-        var fixture = PipelineFixture.Create();
-        fixture.RuntimeProviders.Create(Arg.Any<InstalledVoiceModel>(), Arg.Any<InstalledVoiceModel>())
-            .Returns<VoiceRuntimeProviders>(_ => throw new InvalidOperationException("C:\\Users\\Person\\missing-model"));
-
-        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
-
-        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Error);
-        fixture.State.Snapshot.ErrorCode.Should().Be("model-unavailable");
-        fixture.State.Snapshot.SafeMessage.Should().Contain("модель");
-        fixture.State.Snapshot.SafeMessage.Should().NotContain("Person");
-    }
-
-    [Fact]
-    public async Task DisableAsync_CancelsOwnedRunAndDisposesCapture()
-    {
-        var fixture = PipelineFixture.Create(blockWakeUntilCancellation: true);
-        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        fixture.State.SnapshotChanged += (_, snapshot) =>
-        {
-            if (snapshot.State == VoiceAssistantState.WaitingForWakeWord)
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        fixture.BufferedCaptures.Enqueue(new TestBufferedCaptureSession("bt-mic"));
+        fixture.Buffered.QueueCursorReadEnd(25_600);
+        var wakeCalls = 0;
+        fixture.Wake.WaitForDetectionAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<WakeWordOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(async call =>
             {
-                waiting.TrySetResult();
-            }
-        };
+                var cursor = call.ArgAt<IVoiceAudioCursor>(0);
+                var cancellationToken = call.ArgAt<CancellationToken>(2);
+                switch (Interlocked.Increment(ref wakeCalls))
+                {
+                    case 1:
+                        fixture.Buffered.LatestSampleOffset = 40_000;
+                        await ConsumeAvailableFramesAsync(cursor, cancellationToken);
+                        return new WakeWordDetectionResult("альфа", 0.93, 16_000, 24_000, 32_000);
+                    case 2:
+                        await ConsumeAvailableFramesAsync(cursor, cancellationToken);
+                        return ValidDetection(cursor.StartSampleOffset);
+                    default:
+                        fixture.WakeBlocked.TrySetResult();
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                        return ValidDetection(cursor.StartSampleOffset);
+                }
+            });
 
+        var errors = new List<string?>();
+        fixture.State.SnapshotChanged += (_, snapshot) => errors.Add(snapshot.ErrorCode);
         await fixture.Coordinator.EnableAsync(CancellationToken.None);
-        await waiting.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
         await fixture.Coordinator.DisableAsync(CancellationToken.None);
 
-        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Disabled);
-        fixture.WakeCapture.DisposeCount.Should().Be(1);
+        errors.Should().Contain("voice-wake-timing-invalid");
+        fixture.BufferedCaptures.OpenCount.Should().Be(1);
+        fixture.Buffered.OpenedOffsets.Should().StartWith([0L, 40_000L, 64_000L, 80_000L]);
+        await fixture.Commands.Received(1)
+            .ExecuteAsync(Arg.Any<string>(), Arg.Any<Action<VoiceCommandExecutionProgress>>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task EnableAsync_WhileDisableIsStopping_WaitsForPreviousRunOwnership()
+    public async Task RunSingleCycleAsync_WakeBeforeCursorStartMapsSafeAndDispatchesNothing()
     {
-        var fixture = PipelineFixture.Create();
-        var firstRunStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var secondRunStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var firstRunCancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseFirstRun = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var callCount = 0;
+        var fixture = PipelineFixture.Create(initialLiveEdge: 10_000);
         fixture.Wake.WaitForDetectionAsync(
-                Arg.Any<IAudioCaptureSession>(),
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<WakeWordOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                fixture.Buffered.LatestSampleOffset = 25_600;
+                return new WakeWordDetectionResult("альфа", 0.93, 9_999, 24_000, 25_600);
+            });
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.ErrorCode.Should().Be("voice-wake-timing-invalid");
+        await fixture.Commands.DidNotReceiveWithAnyArgs()
+            .ExecuteAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task EnabledPipeline_TwoCyclesReuseSessionAndSecondWakeStartsAtLiveEdge()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 2);
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.BufferedCaptures.OpenCount.Should().Be(1);
+        fixture.Buffered.OpenedOffsets.Should().StartWith([0L, 24_000L, 40_000L, 64_000L]);
+        fixture.Buffered.CursorAt(40_000).DisposeCount.Should().Be(1);
+        fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task EnabledPipeline_HealthyCooldownDoesNotReopenMicrophone()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 1);
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.BufferedCaptures.OpenCount.Should().Be(1);
+        fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task EnabledPipeline_TypedWakeFailureWithZeroCooldownWaitsMinimumDelayAndKeepsSession()
+    {
+        var timeProvider = new ManualTimeProvider();
+        var fixture = PipelineFixture.Create(
+            successfulWakeCyclesBeforeBlock: 0,
+            cooldown: TimeSpan.Zero,
+            timeProvider: timeProvider);
+        var firstWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wakeCalls = 0;
+        fixture.Wake.WaitForDetectionAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<WakeWordOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns<WakeWordDetectionResult>(_ =>
+            {
+                var call = Interlocked.Increment(ref wakeCalls);
+                (call == 1 ? firstWake : secondWake).TrySetResult();
+                throw new WakeWordDetectionException(
+                    WakeWordDetectionFailureCode.InvalidTiming,
+                    "private Vosk timing detail");
+            });
+        var failureSignals = 0;
+        fixture.Signals.PlayAsync(VoiceSignal.Failure, Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                if (Interlocked.Increment(ref failureSignals) == 2)
+                {
+                    await Task.Delay(
+                        Timeout.InfiniteTimeSpan,
+                        call.ArgAt<CancellationToken>(1));
+                }
+            });
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        try
+        {
+            await firstWake.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            var firstPostFailureBoundary = await Task.WhenAny(
+                timeProvider.TimerScheduled.Task,
+                secondWake.Task).WaitAsync(TimeSpan.FromSeconds(2));
+
+            firstPostFailureBoundary.Should().BeSameAs(timeProvider.TimerScheduled.Task);
+            secondWake.Task.IsCompleted.Should().BeFalse();
+            fixture.BufferedCaptures.OpenCount.Should().Be(1);
+
+            timeProvider.Advance(TimeSpan.FromMilliseconds(50));
+            await secondWake.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            wakeCalls.Should().Be(2);
+            fixture.BufferedCaptures.OpenCount.Should().Be(1);
+            fixture.Buffered.OpenedOffsets.Should().StartWith([0L, 0L]);
+        }
+        finally
+        {
+            await fixture.Coordinator.DisableAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task EnabledPipeline_FailedHandlerPreservesPositiveCooldownAndHealthySession()
+    {
+        var timeProvider = new ManualTimeProvider();
+        var fixture = PipelineFixture.Create(
+            successfulWakeCyclesBeforeBlock: 2,
+            cooldown: TimeSpan.FromMilliseconds(200),
+            timeProvider: timeProvider);
+        var request = new CommandRequest(CommandId.From("audio.change-volume"));
+        var firstHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerCalls = 0;
+        fixture.Commands.ExecuteAsync(
+                Arg.Any<string>(),
+                Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                call.ArgAt<Action<VoiceCommandExecutionProgress>>(1)(
+                    new VoiceCommandExecutionProgress(
+                        request.CommandId,
+                        IntentResolutionStatus.Resolved,
+                        0.92));
+                var count = Interlocked.Increment(ref handlerCalls);
+                (count == 1 ? firstHandler : secondHandler).TrySetResult();
+                return new VoiceCommandExecutionResult(
+                    new IntentResolutionResult(IntentResolutionStatus.Resolved, request, 0.92),
+                    new CommandExecutionResult(
+                        request.CommandId,
+                        CommandExecutionStatus.Failed,
+                        "private endpoint detail")
+                    {
+                        ErrorCode = "audio-endpoint-unavailable",
+                    });
+            });
+        var failureSignals = 0;
+        fixture.Signals.PlayAsync(VoiceSignal.Failure, Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                if (Interlocked.Increment(ref failureSignals) == 2)
+                {
+                    await Task.Delay(
+                        Timeout.InfiniteTimeSpan,
+                        call.ArgAt<CancellationToken>(1));
+                }
+            });
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        try
+        {
+            await firstHandler.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await timeProvider.TimerScheduled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            secondHandler.Task.IsCompleted.Should().BeFalse();
+
+            timeProvider.Advance(TimeSpan.FromMilliseconds(199));
+            secondHandler.Task.IsCompleted.Should().BeFalse();
+            timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+            await secondHandler.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            handlerCalls.Should().Be(2);
+            fixture.BufferedCaptures.OpenCount.Should().Be(1);
+            fixture.Buffered.OpenedOffsets.Should().StartWith([0L, 24_000L, 40_000L, 64_000L]);
+        }
+        finally
+        {
+            await fixture.Coordinator.DisableAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task EnabledPipeline_WhisperFailureKeepsSessionAndNextCycleStartsAtLiveEdge()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 2);
+        fixture.BufferedCaptures.Enqueue(new TestBufferedCaptureSession("bt-mic"));
+        var recognitionCalls = 0;
+        fixture.Speech.RecognizeAsync(
+                Arg.Any<CapturedCommandAudio>(),
+                Arg.Any<SpeechRecognitionOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (Interlocked.Increment(ref recognitionCalls) == 1)
+                {
+                    throw new SpeechRecognitionException(
+                        SpeechRecognitionFailureCode.ProviderFailure,
+                        "private whisper failure");
+                }
+
+                return new SpeechRecognitionResult("сделай громче", 0.91, true);
+            });
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.BufferedCaptures.OpenCount.Should().Be(1);
+        fixture.Buffered.OpenedOffsets.Should().StartWith([0L, 24_000L, 40_000L, 64_000L, 80_000L]);
+        await fixture.Commands.Received(1)
+            .ExecuteAsync(Arg.Any<string>(), Arg.Any<Action<VoiceCommandExecutionProgress>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task EnabledPipeline_BufferOverrunKeepsSessionAndNextCycleStartsAtLiveEdge()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 2);
+        fixture.BufferedCaptures.Enqueue(new TestBufferedCaptureSession("bt-mic"));
+        var activityCalls = 0;
+        fixture.VoiceActivity.CaptureAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<AmbientNoiseSnapshot>(),
+                Arg.Any<VoiceActivityOptions>(),
+                Arg.Any<Action<VoiceActivityProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var cursor = (TestVoiceAudioCursor)call.ArgAt<IVoiceAudioCursor>(0);
+                cursor.Owner.LatestSampleOffset = cursor.StartSampleOffset + 16_000;
+                if (Interlocked.Increment(ref activityCalls) == 1)
+                {
+                    throw new AudioCaptureException(
+                        AudioInputResultCode.BufferOverrun,
+                        "private offset 123456");
+                }
+
+                call.ArgAt<Action<VoiceActivityProgress>>(3)(
+                    new VoiceActivityProgress(cursor.StartSampleOffset + 320, 0.01, 0.25));
+                return SuccessfulActivity(cursor.StartSampleOffset);
+            });
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.BufferedCaptures.OpenCount.Should().Be(1);
+        fixture.Buffered.OpenedOffsets.Should().StartWith([0L, 24_000L, 40_000L, 64_000L, 80_000L]);
+        await fixture.Commands.Received(1)
+            .ExecuteAsync(Arg.Any<string>(), Arg.Any<Action<VoiceCommandExecutionProgress>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task EnabledPipeline_ProviderFailureKeepsHealthySession()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        fixture.BufferedCaptures.Enqueue(new TestBufferedCaptureSession("bt-mic"));
+        var wakeCalls = 0;
+        fixture.Wake.WaitForDetectionAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<WakeWordOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                var cursor = call.ArgAt<IVoiceAudioCursor>(0);
+                var cancellationToken = call.ArgAt<CancellationToken>(2);
+                switch (Interlocked.Increment(ref wakeCalls))
+                {
+                    case 1:
+                        throw new InvalidOperationException("private provider detail");
+                    case 2:
+                        await ConsumeAvailableFramesAsync(cursor, cancellationToken);
+                        return ValidDetection(cursor.StartSampleOffset);
+                    default:
+                        fixture.WakeBlocked.TrySetResult();
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                        return ValidDetection(cursor.StartSampleOffset);
+                }
+            });
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.BufferedCaptures.OpenCount.Should().Be(1);
+        fixture.Buffered.OpenedOffsets.Should().StartWith([0L, 0L, 24_000L, 40_000L]);
+        await fixture.Commands.Received(1)
+            .ExecuteAsync(Arg.Any<string>(), Arg.Any<Action<VoiceCommandExecutionProgress>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task EnabledPipeline_ResolverFailureKeepsHealthySession()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 2);
+        fixture.BufferedCaptures.Enqueue(new TestBufferedCaptureSession("bt-mic"));
+        var commandCalls = 0;
+        fixture.Commands.ExecuteAsync(
+                Arg.Any<string>(),
+                Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                if (Interlocked.Increment(ref commandCalls) == 1)
+                {
+                    throw new InvalidOperationException("private resolver detail");
+                }
+
+                var request = new CommandRequest(CommandId.From("audio.change-volume"));
+                call.ArgAt<Action<VoiceCommandExecutionProgress>>(1)(
+                    new VoiceCommandExecutionProgress(
+                        request.CommandId,
+                        IntentResolutionStatus.Resolved,
+                        1));
+                return new VoiceCommandExecutionResult(
+                    new IntentResolutionResult(IntentResolutionStatus.Resolved, request, 1),
+                    CommandExecutionResult.Succeeded(request.CommandId));
+            });
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.BufferedCaptures.OpenCount.Should().Be(1);
+        fixture.Buffered.OpenedOffsets.Should().StartWith([0L, 24_000L, 40_000L, 64_000L, 80_000L]);
+        commandCalls.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task EnabledPipeline_DisconnectDisposesWaitsExactEndpointAndOpensOneReplacement()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 1);
+        var replacement = new TestBufferedCaptureSession("bt-mic");
+        fixture.BufferedCaptures.Enqueue(replacement);
+        fixture.Buffered.TerminalFailure = new AudioCaptureException(
+            AudioInputResultCode.Disconnected,
+            "private endpoint detail");
+        fixture.Devices.WatchAsync(Arg.Any<CancellationToken>()).Returns(
+            DeviceSnapshots([new AudioInputDevice("bt-mic", "Bluetooth microphone", false, true)]));
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.Buffered.DisposeCount.Should().Be(1);
+        fixture.Buffered.CursorAt(0).DisposeCount.Should().Be(1);
+        replacement.DisposeCount.Should().Be(1);
+        fixture.BufferedCaptures.OpenCount.Should().Be(2);
+        fixture.BufferedCaptures.OpenedEndpoints.Should().OnlyContain(id => id == "bt-mic");
+        fixture.Devices.Received(1).WatchAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task EnabledPipeline_SelectedDeviceUnavailableDuringOpenWaitsExactEndpointBeforeReplacement()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        var replacement = new TestBufferedCaptureSession("bt-mic");
+        fixture.BufferedCaptures.FailNext(new AudioCaptureException(
+            AudioInputResultCode.SelectedDeviceUnavailable,
+            "private endpoint detail"));
+        fixture.BufferedCaptures.Enqueue(replacement);
+        fixture.Devices.WatchAsync(Arg.Any<CancellationToken>()).Returns(
+            DeviceSnapshots([new AudioInputDevice("bt-mic", "Bluetooth microphone", false, true)]));
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.BufferedCaptures.OpenCount.Should().Be(2);
+        fixture.BufferedCaptures.OpenedEndpoints.Should().OnlyContain(id => id == "bt-mic");
+        fixture.Devices.Received(1).WatchAsync(Arg.Any<CancellationToken>());
+        fixture.Buffered.DisposeCount.Should().Be(0);
+        replacement.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task EnabledPipeline_RecoverySettingsFailureIsContainedAndPipelineRetries()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        var replacement = new TestBufferedCaptureSession("bt-mic");
+        fixture.BufferedCaptures.FailNext(new AudioCaptureException(
+            AudioInputResultCode.InitializationFailed,
+            "private initialization detail"));
+        fixture.BufferedCaptures.Enqueue(replacement);
+        var settingsCalls = 0;
+        fixture.Settings.GetAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            if (Interlocked.Increment(ref settingsCalls) == 2)
+            {
+                throw new InvalidOperationException("private settings detail");
+            }
+
+            return fixture.SettingsValue;
+        });
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.BufferedCaptures.OpenCount.Should().Be(2);
+        replacement.DisposeCount.Should().Be(1);
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Disabled);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task EnabledPipeline_RecoveryWatchFailureIsContainedAndPipelineRetries()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        var replacement = new TestBufferedCaptureSession("bt-mic");
+        fixture.BufferedCaptures.FailNext(new AudioCaptureException(
+            AudioInputResultCode.SelectedDeviceUnavailable,
+            "private endpoint detail"));
+        fixture.BufferedCaptures.Enqueue(replacement);
+        fixture.Devices.WatchAsync(Arg.Any<CancellationToken>()).Returns(
+            FailingDeviceSnapshots(new InvalidOperationException("private watch detail")));
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.BufferedCaptures.OpenCount.Should().Be(2);
+        fixture.Devices.Received(1).WatchAsync(Arg.Any<CancellationToken>());
+        replacement.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task DisableAsync_WhileRecoveryWatchWaitsCancelsWatchAndPublishesDisabled()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        fixture.BufferedCaptures.FailNext(new AudioCaptureException(
+            AudioInputResultCode.SelectedDeviceUnavailable,
+            "private endpoint detail"));
+        var watchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Devices.WatchAsync(Arg.Any<CancellationToken>()).Returns(call =>
+            WaitingDeviceSnapshots(watchStarted, call.ArgAt<CancellationToken>(0)));
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await watchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.BufferedCaptures.OpenCount.Should().Be(1);
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Disabled);
+        fixture.State.Snapshot.IsCaptureActive.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DisableAsync_WhileWakeWaitsDisposesCursorAndSessionOnceAndClearsDiagnostics()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.Buffered.CursorAt(0).DisposeCount.Should().Be(1);
+        fixture.Buffered.DisposeCount.Should().Be(1);
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Disabled);
+        fixture.State.Snapshot.IsCaptureActive.Should().BeFalse();
+        fixture.State.Snapshot.LastCapturedCommandDuration.Should().BeNull();
+        fixture.State.Snapshot.LastNoiseFloorRms.Should().BeNull();
+        fixture.State.Snapshot.LastPeakRms.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task EnableAsync_ReturnsBeforeSynchronousWakeProviderBlocksWorker()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim(false);
+        fixture.Wake.WaitForDetectionAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<WakeWordOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                entered.TrySetResult();
+                release.Wait(call.ArgAt<CancellationToken>(2));
+                return ValidDetection();
+            });
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var disable = fixture.Coordinator.DisableAsync(CancellationToken.None);
+        release.Set();
+        await disable;
+        fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task EnableAsync_AfterFatalRunTaskObservesFailureBeforeStartingReplacement()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        var fatal = new OutOfMemoryException("private settings detail");
+        var settingsCalls = 0;
+        fixture.Settings.GetAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            if (Interlocked.Increment(ref settingsCalls) == 1)
+            {
+                throw fatal;
+            }
+
+            return fixture.SettingsValue;
+        });
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        try
+        {
+            var priorRunTask = GetRunTask(fixture.Coordinator);
+            var initialFailure = await Record.ExceptionAsync(
+                () => priorRunTask.WaitAsync(TimeSpan.FromSeconds(2)));
+            initialFailure.Should().BeSameAs(fatal);
+
+            var repeatFailure = await Record.ExceptionAsync(
+                () => fixture.Coordinator.EnableAsync(CancellationToken.None));
+            repeatFailure.Should().BeSameAs(fatal);
+            fixture.BufferedCaptures.OpenCount.Should().Be(0);
+
+            await fixture.Coordinator.EnableAsync(CancellationToken.None);
+            await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            fixture.BufferedCaptures.OpenCount.Should().Be(1);
+        }
+        finally
+        {
+            await fixture.Coordinator.DisableAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task EnableAsync_WhileDisableWaitsForCursorExitCannotOverlapOwnership()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        var replacement = new TestBufferedCaptureSession("bt-mic");
+        fixture.BufferedCaptures.Enqueue(replacement);
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wakeCalls = 0;
+        fixture.Wake.WaitForDetectionAsync(
+                Arg.Any<IVoiceAudioCursor>(),
                 Arg.Any<WakeWordOptions>(),
                 Arg.Any<CancellationToken>())
             .Returns(async call =>
             {
                 var cancellationToken = call.ArgAt<CancellationToken>(2);
-                if (Interlocked.Increment(ref callCount) == 1)
+                if (Interlocked.Increment(ref wakeCalls) == 1)
                 {
-                    firstRunStarted.TrySetResult();
+                    firstStarted.TrySetResult();
                     try
                     {
                         await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
                     }
                     catch (OperationCanceledException)
                     {
-                        firstRunCancellationObserved.TrySetResult();
-                        await releaseFirstRun.Task;
+                        cancellationObserved.TrySetResult();
+                        await releaseFirst.Task;
                         throw;
                     }
                 }
 
-                secondRunStarted.TrySetResult();
+                secondStarted.TrySetResult();
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-                return new WakeWordDetectionResult("альфа", 0.93);
+                return ValidDetection();
             });
 
         await fixture.Coordinator.EnableAsync(CancellationToken.None);
-        await firstRunStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        var disableTask = fixture.Coordinator.DisableAsync(CancellationToken.None);
-        await firstRunCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var disable = fixture.Coordinator.DisableAsync(CancellationToken.None);
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-        var enableTask = fixture.Coordinator.EnableAsync(CancellationToken.None);
-        await Task.Yield();
-
-        var enableCompletedBeforeRelease = enableTask.IsCompleted;
-        releaseFirstRun.TrySetResult();
-        await disableTask.WaitAsync(TimeSpan.FromSeconds(2));
-        await enableTask.WaitAsync(TimeSpan.FromSeconds(2));
-        await secondRunStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        var stateBeforeCleanup = fixture.State.Snapshot.State;
+        var enable = fixture.Coordinator.EnableAsync(CancellationToken.None);
+        enable.IsCompleted.Should().BeFalse();
+        releaseFirst.TrySetResult();
+        await disable;
+        await enable;
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
         await fixture.Coordinator.DisableAsync(CancellationToken.None);
-        stateBeforeCleanup.Should().Be(VoiceAssistantState.WaitingForWakeWord);
-        enableCompletedBeforeRelease.Should().BeFalse();
+
+        fixture.BufferedCaptures.OpenCount.Should().Be(2);
+        fixture.Buffered.DisposeCount.Should().Be(1);
+        replacement.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task DisableAsync_CallerCancellationAfterStopOwnershipDoesNotInterruptCleanup()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseProvider = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Wake.WaitForDetectionAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<WakeWordOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                var pipelineToken = call.ArgAt<CancellationToken>(2);
+                fixture.WakeBlocked.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, pipelineToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    cancellationObserved.TrySetResult();
+                    await releaseProvider.Task;
+                    throw;
+                }
+
+                return ValidDetection();
+            });
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        using var callerCancellation = new CancellationTokenSource();
+
+        var disable = fixture.Coordinator.DisableAsync(callerCancellation.Token);
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        callerCancellation.Cancel();
+        await Task.Delay(50);
+        var completedBeforeRelease = disable.IsCompleted;
+        releaseProvider.TrySetResult();
+
+        await disable;
+        completedBeforeRelease.Should().BeFalse();
+        fixture.Buffered.DisposeCount.Should().Be(1);
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Disabled);
+        fixture.State.Snapshot.IsCaptureActive.Should().BeFalse();
     }
 
     [Fact]
-    public async Task RunSingleCycleAsync_ProviderThrows_PublishesSafeGenericError()
+    public async Task ActivationGate_WhileWakeWaitsDisposesOnceAndResumesWithReplacement()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        var replacement = new TestBufferedCaptureSession("bt-mic");
+        fixture.BufferedCaptures.Enqueue(replacement);
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var gate = new VoiceModelActivationGate(fixture.Coordinator);
+
+        await using (await gate.EnterIdleAsync(CancellationToken.None))
+        {
+            fixture.Buffered.CursorAt(0).DisposeCount.Should().Be(1);
+            fixture.Buffered.DisposeCount.Should().Be(1);
+            fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Disabled);
+        }
+
+        await fixture.BufferedCaptures.WaitForOpenCountAsync(2).WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+        replacement.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_CancellationAtWakeDisposesCursorAndSessionOnce()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        using var cancellation = new CancellationTokenSource();
+        var run = fixture.Coordinator.RunSingleCycleAsync(cancellation.Token);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        cancellation.Cancel();
+
+        await FluentActions.Awaiting(() => run).Should().ThrowAsync<OperationCanceledException>();
+        fixture.Buffered.CursorAt(0).DisposeCount.Should().Be(1);
+        fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_CancellationDuringDeviceResolutionStopsBeforeOpen()
     {
         var fixture = PipelineFixture.Create();
-        fixture.Wake.WaitForDetectionAsync(
-                Arg.Any<IAudioCaptureSession>(),
-                Arg.Any<WakeWordOptions>(),
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Devices.ResolveAsync("bt-mic", Arg.Any<CancellationToken>()).Returns(async call =>
+        {
+            entered.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, call.ArgAt<CancellationToken>(1));
+            return new AudioInputResolution(AudioInputResultCode.Success, null);
+        });
+        using var cancellation = new CancellationTokenSource();
+        var run = fixture.Coordinator.RunSingleCycleAsync(cancellation.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        cancellation.Cancel();
+
+        await FluentActions.Awaiting(() => run).Should().ThrowAsync<OperationCanceledException>();
+        fixture.BufferedCaptures.OpenCount.Should().Be(0);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_CancellationDuringOpenStopsWithoutSessionOwnership()
+    {
+        var fixture = PipelineFixture.Create();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.BufferedCaptures.FailNext(async (_, cancellationToken) =>
+        {
+            entered.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return fixture.Buffered;
+        });
+        using var cancellation = new CancellationTokenSource();
+        var run = fixture.Coordinator.RunSingleCycleAsync(cancellation.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        cancellation.Cancel();
+
+        await FluentActions.Awaiting(() => run).Should().ThrowAsync<OperationCanceledException>();
+        fixture.Buffered.DisposeCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_CancellationAtVadDisposesBothCursorsAndSessionOnce()
+    {
+        var fixture = PipelineFixture.Create();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.VoiceActivity.CaptureAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<AmbientNoiseSnapshot>(),
+                Arg.Any<VoiceActivityOptions>(),
+                Arg.Any<Action<VoiceActivityProgress>>(),
                 Arg.Any<CancellationToken>())
-            .Returns<Task<WakeWordDetectionResult>>(_ => throw new InvalidOperationException("C:\\Users\\Person\\private-model"));
+            .Returns(async call =>
+            {
+                entered.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, call.ArgAt<CancellationToken>(4));
+                return SuccessfulActivity();
+            });
+        using var cancellation = new CancellationTokenSource();
+        var run = fixture.Coordinator.RunSingleCycleAsync(cancellation.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        cancellation.Cancel();
+
+        await FluentActions.Awaiting(() => run).Should().ThrowAsync<OperationCanceledException>();
+        fixture.Buffered.CursorAt(0).DisposeCount.Should().Be(1);
+        fixture.Buffered.CursorAt(24_000).DisposeCount.Should().Be(1);
+        fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_CancellationAtWhisperKeepsSessionUntilRecognitionExits()
+    {
+        var fixture = PipelineFixture.Create();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Speech.RecognizeAsync(
+                Arg.Any<CapturedCommandAudio>(),
+                Arg.Any<SpeechRecognitionOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                fixture.Buffered.CursorAt(24_000).DisposeCount.Should().Be(1);
+                fixture.Buffered.DisposeCount.Should().Be(0);
+                entered.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, call.ArgAt<CancellationToken>(2));
+                return new SpeechRecognitionResult("команда", 0.9, true);
+            });
+        using var cancellation = new CancellationTokenSource();
+        var run = fixture.Coordinator.RunSingleCycleAsync(cancellation.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        cancellation.Cancel();
+
+        await FluentActions.Awaiting(() => run).Should().ThrowAsync<OperationCanceledException>();
+        fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_CancellationDuringResolverDisposesSessionOnce()
+    {
+        var fixture = PipelineFixture.Create();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Commands.ExecuteAsync(
+                Arg.Any<string>(),
+                Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                entered.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, call.ArgAt<CancellationToken>(2));
+                return default!;
+            });
+        using var cancellation = new CancellationTokenSource();
+        var run = fixture.Coordinator.RunSingleCycleAsync(cancellation.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        cancellation.Cancel();
+
+        await FluentActions.Awaiting(() => run).Should().ThrowAsync<OperationCanceledException>();
+        fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_CancellationAtCooldownDisposesSessionOnce()
+    {
+        var fixture = PipelineFixture.Create(cooldown: TimeSpan.FromHours(1));
+        using var cancellation = new CancellationTokenSource();
+        fixture.State.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == VoiceAssistantState.Cooldown)
+            {
+                cancellation.Cancel();
+            }
+        };
+
+        var run = fixture.Coordinator.RunSingleCycleAsync(cancellation.Token);
+
+        await FluentActions.Awaiting(() => run).Should().ThrowAsync<OperationCanceledException>();
+        fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_OpenFailurePublishesSafeErrorWithoutDisposal()
+    {
+        var fixture = PipelineFixture.Create();
+        fixture.BufferedCaptures.FailNext(new AudioCaptureException(
+            AudioInputResultCode.InitializationFailed,
+            "private native failure"));
 
         await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
+        fixture.State.Snapshot.ErrorCode.Should().Be("microphone-capture-failed");
+        fixture.Buffered.DisposeCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_SessionDisposeFailurePublishesSafeGenericErrorAndClearsActiveFlag()
+    {
+        var fixture = PipelineFixture.Create();
+        fixture.Buffered.DisposeFailure = new InvalidOperationException("private dispose detail");
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.Buffered.DisposeCount.Should().Be(1);
         fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Error);
         fixture.State.Snapshot.ErrorCode.Should().Be("voice-pipeline-failed");
-        fixture.State.Snapshot.SafeMessage.Should().NotContain("Person");
-        fixture.State.Snapshot.SafeMessage.Should().NotContain("private-model");
+        fixture.State.Snapshot.SafeMessage.Should().NotContain("private");
+        fixture.State.Snapshot.IsCaptureActive.Should().BeFalse();
     }
 
-    [Fact]
-    public async Task ExplicitBluetoothMicrophoneReconnect_ResumesSameEndpoint()
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_DisconnectAndDisposeFailurePreservesDisconnectRecoveryCode()
     {
-        var fixture = PipelineFixture.Create(blockWakeUntilCancellation: true);
-        fixture.Devices.ResolveAsync("bt-mic", Arg.Any<CancellationToken>()).Returns(
-            new AudioInputResolution(AudioInputResultCode.SelectedDeviceUnavailable, null),
-            new AudioInputResolution(
-                AudioInputResultCode.Success,
-                new AudioInputDevice("bt-mic", "Bluetooth microphone", false, true)));
-        fixture.Devices.WatchAsync(Arg.Any<CancellationToken>()).Returns(
-            DeviceSnapshots(
-                [],
-                [new AudioInputDevice("bt-mic", "Bluetooth microphone", false, true)]));
-        var waiting = WaitForStateAsync(fixture.State, VoiceAssistantState.WaitingForWakeWord);
-
-        await fixture.Coordinator.EnableAsync(CancellationToken.None);
-        await waiting.WaitAsync(TimeSpan.FromSeconds(2));
-        await fixture.Coordinator.DisableAsync(CancellationToken.None);
-
-        await fixture.Captures.Received().OpenAsync("bt-mic", Arg.Any<CancellationToken>());
-        await fixture.Captures.DidNotReceive().OpenAsync(
-            Arg.Is<string>(id => !string.Equals(id, "bt-mic", StringComparison.Ordinal)),
-            Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task ActiveBluetoothCaptureDisconnect_WaitsForSameEndpointBeforeRetry()
-    {
-        var fixture = PipelineFixture.Create();
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        fixture.Buffered.DisposeFailure = new InvalidOperationException("private dispose detail");
         fixture.Wake.WaitForDetectionAsync(
-                Arg.Any<IAudioCaptureSession>(),
+                Arg.Any<IVoiceAudioCursor>(),
                 Arg.Any<WakeWordOptions>(),
                 Arg.Any<CancellationToken>())
-            .Returns(
-                _ => throw new AudioCaptureException(AudioInputResultCode.Disconnected, "Microphone disconnected."),
-                async call =>
-                {
-                    await Task.Delay(Timeout.InfiniteTimeSpan, call.ArgAt<CancellationToken>(2));
-                    return new WakeWordDetectionResult("альфа", 0.93);
-                });
-        var watchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        fixture.Devices.WatchAsync(Arg.Any<CancellationToken>()).Returns(
-            DeviceSnapshots(
-                watchStarted,
-                [new AudioInputDevice("bt-mic", "Bluetooth microphone", false, true)]));
+            .Returns<WakeWordDetectionResult>(_ => throw new AudioCaptureException(
+                AudioInputResultCode.Disconnected,
+                "private endpoint detail"));
 
-        await fixture.Coordinator.EnableAsync(CancellationToken.None);
-        await watchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
-        fixture.Devices.Received(1).WatchAsync(Arg.Any<CancellationToken>());
-        await fixture.Captures.DidNotReceive().OpenAsync(
-            Arg.Is<string>(id => !string.Equals(id, "bt-mic", StringComparison.Ordinal)),
-            Arg.Any<CancellationToken>());
+        fixture.Buffered.DisposeCount.Should().Be(1);
+        fixture.State.Snapshot.ErrorCode.Should().Be("microphone-disconnected");
+        fixture.State.Snapshot.SafeMessage.Should().NotContain("private");
+        fixture.State.Snapshot.IsCaptureActive.Should().BeFalse();
     }
 
-    [Fact]
-    public async Task CommandBluetoothCaptureDisconnect_WaitsForSameEndpointBeforeRetry()
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_BufferOverrunAndDisposeFailurePreservesOverrunCode()
     {
         var fixture = PipelineFixture.Create();
+        fixture.Buffered.DisposeFailure = new InvalidOperationException("private dispose detail");
         fixture.VoiceActivity.CaptureAsync(
-                Arg.Any<IAudioCaptureSession>(),
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<AmbientNoiseSnapshot>(),
                 Arg.Any<VoiceActivityOptions>(),
+                Arg.Any<Action<VoiceActivityProgress>>(),
                 Arg.Any<CancellationToken>())
             .Returns<VoiceActivityResult>(_ => throw new AudioCaptureException(
-                AudioInputResultCode.Disconnected,
-                "Microphone disconnected."));
-        var watchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        fixture.Devices.WatchAsync(Arg.Any<CancellationToken>()).Returns(
-            DeviceSnapshots(
-                watchStarted,
-                [new AudioInputDevice("bt-mic", "Bluetooth microphone", false, true)]));
+                AudioInputResultCode.BufferOverrun,
+                "private offset 123456"));
 
-        await fixture.Coordinator.EnableAsync(CancellationToken.None);
-        await watchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
-        fixture.Devices.Received(1).WatchAsync(Arg.Any<CancellationToken>());
-        await fixture.Captures.DidNotReceive().OpenAsync(
-            Arg.Is<string>(id => !string.Equals(id, "bt-mic", StringComparison.Ordinal)),
-            Arg.Any<CancellationToken>());
+        fixture.Buffered.DisposeCount.Should().Be(1);
+        fixture.State.Snapshot.ErrorCode.Should().Be("voice-audio-overrun");
+        fixture.State.Snapshot.SafeMessage.Should().Be(
+            "Не удалось сохранить начало команды. Повторите команду.");
+        fixture.State.Snapshot.IsCaptureActive.Should().BeFalse();
     }
 
     [Fact]
-    public async Task ActivationGate_StopsPipelineWhileLeaseIsHeldAndResumesAfterRelease()
-    {
-        var fixture = PipelineFixture.Create(blockWakeUntilCancellation: true);
-        var firstWaiting = WaitForStateAsync(fixture.State, VoiceAssistantState.WaitingForWakeWord);
-        await fixture.Coordinator.EnableAsync(CancellationToken.None);
-        await firstWaiting.WaitAsync(TimeSpan.FromSeconds(2));
-        var activationGate = new VoiceModelActivationGate(fixture.Coordinator);
-
-        var secondWaiting = WaitForStateAsync(fixture.State, VoiceAssistantState.WaitingForWakeWord);
-        await using (await activationGate.EnterIdleAsync(CancellationToken.None))
-        {
-            fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Disabled);
-            fixture.WakeCapture.DisposeCount.Should().Be(1);
-        }
-
-        await secondWaiting.WaitAsync(TimeSpan.FromSeconds(2));
-        await fixture.Coordinator.DisableAsync(CancellationToken.None);
-
-        fixture.CommandCapture.DisposeCount.Should().Be(1);
-    }
-
-    [Fact]
-    public async Task SuccessSignalThrows_DoesNotDiscardRecognizedTextOrFailCycle()
+    public async Task RunSingleCycleAsync_BufferedFormatMismatchRejectsBeforeOpeningCursor()
     {
         var fixture = PipelineFixture.Create();
-        fixture.Signals.PlayAsync(VoiceSignal.Success, Arg.Any<CancellationToken>())
-            .Returns<Task>(_ => throw new InvalidOperationException("tone unavailable"));
+        fixture.Buffered.Format = new AudioFormat(48_000, 2, 32, true);
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.ErrorCode.Should().Be("microphone-format-unsupported");
+        fixture.Buffered.OpenedOffsets.Should().BeEmpty();
+        await fixture.Commands.DidNotReceiveWithAnyArgs()
+            .ExecuteAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_LateProgressAfterCaptureFailureIsIgnored()
+    {
+        var fixture = PipelineFixture.Create();
+        Action<VoiceActivityProgress>? lateProgress = null;
+        var history = new List<VoiceAssistantState>();
+        fixture.State.SnapshotChanged += (_, snapshot) => history.Add(snapshot.State);
+        fixture.VoiceActivity.CaptureAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<AmbientNoiseSnapshot>(),
+                Arg.Any<VoiceActivityOptions>(),
+                Arg.Any<Action<VoiceActivityProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns<VoiceActivityResult>(call =>
+            {
+                lateProgress = call.ArgAt<Action<VoiceActivityProgress>>(3);
+                throw new AudioCaptureException(AudioInputResultCode.Disconnected, "disconnected");
+            });
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+        lateProgress.Should().NotBeNull();
+        lateProgress!(new VoiceActivityProgress(24_320, 0.75, 0.99));
+
+        history.Should().NotContain(VoiceAssistantState.DetectingSpeechEnd);
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Error);
+        fixture.State.Snapshot.LastNoiseFloorRms.Should().BeNull();
+        fixture.State.Snapshot.LastPeakRms.Should().BeNull();
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_LateProgressAfterSuccessfulCaptureIsIgnored()
+    {
+        var fixture = PipelineFixture.Create();
+        Action<VoiceActivityProgress>? lateProgress = null;
+        var history = new List<VoiceAssistantState>();
+        fixture.State.SnapshotChanged += (_, snapshot) => history.Add(snapshot.State);
+        fixture.VoiceActivity.CaptureAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<AmbientNoiseSnapshot>(),
+                Arg.Any<VoiceActivityOptions>(),
+                Arg.Any<Action<VoiceActivityProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var cursor = (TestVoiceAudioCursor)call.ArgAt<IVoiceAudioCursor>(0);
+                lateProgress = call.ArgAt<Action<VoiceActivityProgress>>(3);
+                lateProgress(new VoiceActivityProgress(cursor.StartSampleOffset + 320, 0.01, 0.25));
+                return SuccessfulActivity(cursor.StartSampleOffset);
+            });
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+        var stateAfterReturn = fixture.State.Snapshot;
+        lateProgress.Should().NotBeNull();
+        lateProgress!(new VoiceActivityProgress(99_999, 0.75, 0.99));
+
+        fixture.State.Snapshot.Should().BeSameAs(stateAfterReturn);
+        history.Count(state => state == VoiceAssistantState.DetectingSpeechEnd).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_PublishesOnlySafeInMemoryDiagnostics()
+    {
+        var fixture = PipelineFixture.Create();
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.LastCapturedCommandDuration.Should().Be(TimeSpan.FromSeconds(1));
+        fixture.State.Snapshot.LastNoiseFloorRms.Should().Be(0.01);
+        fixture.State.Snapshot.LastPeakRms.Should().Be(0.25);
+        typeof(VoicePipelineSnapshot).GetProperties()
+            .Select(property => property.Name)
+            .Should().NotContain(name => name.Contains("SampleOffset", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_SpeechRecognitionFailurePreservesDiagnosticTextWithoutDispatch()
+    {
+        var fixture = PipelineFixture.Create();
+        fixture.Speech.RecognizeAsync(
+                Arg.Any<CapturedCommandAudio>(),
+                Arg.Any<SpeechRecognitionOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns<SpeechRecognitionResult>(_ => throw new SpeechRecognitionException(
+                SpeechRecognitionFailureCode.ConfidenceBelowThreshold,
+                "safe failure")
+            {
+                RecognizedText = "сделай тише",
+                RecognitionConfidence = 0.42,
+            });
 
         await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
         fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.WaitingForWakeWord);
-        fixture.State.Snapshot.LastRecognizedText.Should().Be("сделай громче");
-        fixture.State.Snapshot.ErrorCode.Should().BeNull();
+        fixture.State.Snapshot.ErrorCode.Should().Be("speech-confidence-low");
+        fixture.State.Snapshot.LastRecognizedText.Should().Be("сделай тише");
+        fixture.State.Snapshot.LastRecognitionConfidence.Should().Be(0.42);
+        await fixture.Commands.DidNotReceiveWithAnyArgs()
+            .ExecuteAsync(default!, default!, default);
     }
 
-    [Fact]
-    public async Task FailureSignalThrows_StillPublishesSafeProviderError()
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_TypedWakeTimingFailurePublishesSafeCodeWithoutDispatch()
     {
         var fixture = PipelineFixture.Create();
         fixture.Wake.WaitForDetectionAsync(
-                Arg.Any<IAudioCaptureSession>(),
+                Arg.Any<IVoiceAudioCursor>(),
                 Arg.Any<WakeWordOptions>(),
                 Arg.Any<CancellationToken>())
-            .Returns<Task<WakeWordDetectionResult>>(_ => throw new InvalidOperationException("provider failed"));
-        fixture.Signals.PlayAsync(VoiceSignal.Failure, Arg.Any<CancellationToken>())
-            .Returns<Task>(_ => throw new InvalidOperationException("tone unavailable"));
+            .Returns<WakeWordDetectionResult>(_ => throw new WakeWordDetectionException(
+                WakeWordDetectionFailureCode.InvalidTiming,
+                "private offset 123456"));
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.WaitingForWakeWord);
+        fixture.State.Snapshot.ErrorCode.Should().Be("voice-wake-timing-invalid");
+        fixture.State.Snapshot.SafeMessage.Should().NotContain("123456");
+        await fixture.Commands.DidNotReceiveWithAnyArgs()
+            .ExecuteAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_SelectedMicrophoneUnavailableNeverOpensCapture()
+    {
+        var fixture = PipelineFixture.Create();
+        fixture.Devices.ResolveAsync("bt-mic", Arg.Any<CancellationToken>()).Returns(
+            new AudioInputResolution(
+                AudioInputResultCode.SelectedDeviceUnavailable,
+                null,
+                "private device detail"));
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.ErrorCode.Should().Be("microphone-unavailable");
+        fixture.State.Snapshot.SafeMessage.Should().NotContain("private");
+        fixture.BufferedCaptures.OpenCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_MissingExactEndpointNeverFallsBackToDefault()
+    {
+        var fixture = PipelineFixture.Create(endpointId: null);
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.ErrorCode.Should().Be("microphone-unavailable");
+        await fixture.Devices.DidNotReceiveWithAnyArgs().ResolveAsync(default, default);
+        fixture.BufferedCaptures.OpenCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_ResolvedDifferentEndpointNeverFallsBack()
+    {
+        var fixture = PipelineFixture.Create();
+        fixture.Devices.ResolveAsync("bt-mic", Arg.Any<CancellationToken>()).Returns(
+            new AudioInputResolution(
+                AudioInputResultCode.Success,
+                new AudioInputDevice("default-mic", "Default microphone", true, true)));
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.ErrorCode.Should().Be("microphone-unavailable");
+        fixture.BufferedCaptures.OpenCount.Should().Be(0);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_MissingCommandModelPublishesSafeModelFailure()
+    {
+        var fixture = PipelineFixture.Create();
+        fixture.Models.GetActiveAsync(
+                VoiceModelProvider.CommandWhisper,
+                Arg.Any<CancellationToken>())
+            .Returns((InstalledVoiceModel?)null);
 
         await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
         fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Error);
-        fixture.State.Snapshot.ErrorCode.Should().Be("voice-pipeline-failed");
+        fixture.State.Snapshot.ErrorCode.Should().Be("model-unavailable");
+        fixture.BufferedCaptures.OpenCount.Should().Be(0);
     }
 
-    private static Task WaitForStateAsync(VoicePipelineStateStore state, VoiceAssistantState expected)
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_RuntimeProviderFailurePublishesSafeModelFailure()
     {
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        EventHandler<VoicePipelineSnapshot>? handler = null;
-        handler = (_, snapshot) =>
-        {
-            if (snapshot.State != expected)
-            {
-                return;
-            }
+        var fixture = PipelineFixture.Create();
+        fixture.RuntimeProviders.Create(
+                Arg.Any<InstalledVoiceModel>(),
+                Arg.Any<InstalledVoiceModel>())
+            .Returns<VoiceRuntimeProviders>(_ => throw new InvalidOperationException(
+                "C:\\Users\\Person\\private-model"));
 
-            state.SnapshotChanged -= handler;
-            completion.TrySetResult();
-        };
-        state.SnapshotChanged += handler;
-        return completion.Task;
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Error);
+        fixture.State.Snapshot.ErrorCode.Should().Be("model-unavailable");
+        fixture.State.Snapshot.SafeMessage.Should().NotContain("Person");
+        fixture.BufferedCaptures.OpenCount.Should().Be(0);
     }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_ResolvesDispatchesSignalsAndPublishesSafeOutcome()
+    {
+        var fixture = PipelineFixture.Create();
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.LastRecognizedText.Should().Be("сделай громче");
+        fixture.State.Snapshot.LastResolvedCommandId.Should().Be("audio.change-volume");
+        fixture.State.Snapshot.LastIntentStatus.Should().Be(IntentResolutionStatus.Resolved);
+        fixture.State.Snapshot.LastExecutionStatus.Should().Be(CommandExecutionStatus.Succeeded);
+        fixture.State.Snapshot.SafeMessage.Should().Be("Команда выполнена.");
+        await fixture.Signals.Received(1)
+            .PlayAsync(VoiceSignal.Success, Arg.Any<CancellationToken>());
+    }
+
+    [Theory(Timeout = 5_000)]
+    [InlineData(IntentResolutionStatus.NotFound, "voice-command-not-found")]
+    [InlineData(IntentResolutionStatus.Ambiguous, "voice-command-ambiguous")]
+    public async Task RunSingleCycleAsync_UnresolvedCommandSignalsFailureWithoutDispatchState(
+        IntentResolutionStatus status,
+        string expectedCode)
+    {
+        var fixture = PipelineFixture.Create();
+        var history = new List<VoiceAssistantState>();
+        fixture.State.SnapshotChanged += (_, snapshot) => history.Add(snapshot.State);
+        fixture.Commands.ExecuteAsync(
+                Arg.Any<string>(),
+                Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new VoiceCommandExecutionResult(
+                new IntentResolutionResult(status, null, 0),
+                null));
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.LastIntentStatus.Should().Be(status);
+        fixture.State.Snapshot.LastExecutionStatus.Should().BeNull();
+        fixture.State.Snapshot.ErrorCode.Should().Be(expectedCode);
+        history.Should().Contain(VoiceAssistantState.ResolvingCommand);
+        history.Should().NotContain(VoiceAssistantState.ExecutingCommand);
+        await fixture.Signals.Received(1)
+            .PlayAsync(VoiceSignal.Failure, Arg.Any<CancellationToken>());
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_FailedHandlerPublishesSafeCodeAndRecovers()
+    {
+        var fixture = PipelineFixture.Create();
+        var request = new CommandRequest(CommandId.From("audio.switch-preferred-device"));
+        fixture.Commands.ExecuteAsync(
+                Arg.Any<string>(),
+                Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                call.Arg<Action<VoiceCommandExecutionProgress>>()(
+                    new VoiceCommandExecutionProgress(
+                        request.CommandId,
+                        IntentResolutionStatus.Resolved,
+                        0.93));
+                return new VoiceCommandExecutionResult(
+                    new IntentResolutionResult(IntentResolutionStatus.Resolved, request, 0.93),
+                    new CommandExecutionResult(
+                        request.CommandId,
+                        CommandExecutionStatus.Failed,
+                        "Private endpoint bt-personal failed.")
+                    {
+                        ErrorCode = "audio-endpoint-unavailable",
+                    });
+            });
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.WaitingForWakeWord);
+        fixture.State.Snapshot.LastExecutionStatus.Should().Be(CommandExecutionStatus.Failed);
+        fixture.State.Snapshot.ErrorCode.Should().Be("audio-endpoint-unavailable");
+        fixture.State.Snapshot.SafeMessage.Should().NotContain("bt-personal");
+        await fixture.Signals.Received(1)
+            .PlayAsync(VoiceSignal.Failure, Arg.Any<CancellationToken>());
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_SuccessSignalFailureDoesNotDiscardOutcome()
+    {
+        var fixture = PipelineFixture.Create();
+        fixture.Signals.PlayAsync(VoiceSignal.Success, Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new InvalidOperationException("private signal detail"));
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.LastRecognizedText.Should().Be("сделай громче");
+        fixture.State.Snapshot.LastExecutionStatus.Should().Be(CommandExecutionStatus.Succeeded);
+        fixture.State.Snapshot.ErrorCode.Should().BeNull();
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_FailureSignalFailureDoesNotReplaceProviderCode()
+    {
+        var fixture = PipelineFixture.Create();
+        fixture.Wake.WaitForDetectionAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<WakeWordOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns<WakeWordDetectionResult>(_ => throw new InvalidOperationException(
+                "private provider detail"));
+        fixture.Signals.PlayAsync(VoiceSignal.Failure, Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new InvalidOperationException("private signal detail"));
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.ErrorCode.Should().Be("voice-pipeline-failed");
+        fixture.State.Snapshot.SafeMessage.Should().NotContain("private");
+    }
+
+    [Theory(Timeout = 5_000)]
+    [InlineData(FatalFailureCase.OutOfMemory)]
+    [InlineData(FatalFailureCase.AccessViolation)]
+    [InlineData(FatalFailureCase.AppDomainUnloaded)]
+    [InlineData(FatalFailureCase.BadImageFormat)]
+    [InlineData(FatalFailureCase.InnerOutOfMemory)]
+    [InlineData(FatalFailureCase.AggregateBadImageFormat)]
+    public async Task RunSingleCycleAsync_FatalProviderFailurePropagatesUnchanged(
+        FatalFailureCase failureCase)
+    {
+        var fixture = PipelineFixture.Create();
+        var fatal = CreateFatalFailure(failureCase);
+        fixture.Wake.WaitForDetectionAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<WakeWordOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns<WakeWordDetectionResult>(_ => throw fatal);
+
+        var failure = await Record.ExceptionAsync(
+            () => fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None));
+
+        failure.Should().BeSameAs(fatal);
+        fixture.Buffered.DisposeCount.Should().Be(1);
+        fixture.Logger.Entries.Should().OnlyContain(entry => entry.Exception == null);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_FatalSignalFailurePropagatesUnchanged()
+    {
+        var fixture = PipelineFixture.Create();
+        var fatal = new AccessViolationException("private signal detail");
+        fixture.Signals.PlayAsync(VoiceSignal.Success, Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw fatal);
+
+        var failure = await Record.ExceptionAsync(
+            () => fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None));
+
+        failure.Should().BeSameAs(fatal);
+        fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_FatalDisposalFailurePropagatesUnchanged()
+    {
+        var fixture = PipelineFixture.Create();
+        var fatal = new BadImageFormatException("private disposal detail");
+        fixture.Buffered.DisposeFailure = fatal;
+
+        var failure = await Record.ExceptionAsync(
+            () => fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None));
+
+        failure.Should().BeSameAs(fatal);
+        fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_LogsExcludeEndpointTextOffsetsAndRmsValues()
+    {
+        var fixture = PipelineFixture.Create();
+        fixture.Speech.RecognizeAsync(
+                Arg.Any<CapturedCommandAudio>(),
+                Arg.Any<SpeechRecognitionOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new SpeechRecognitionResult("секретная команда", 0.987654, true));
+        fixture.Commands.ExecuteAsync(
+                Arg.Any<string>(),
+                Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns<VoiceCommandExecutionResult>(_ => throw new InvalidOperationException(
+                "bt-private offset=123456 rms=0.987654 секретная команда"));
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        var loggedData = fixture.Logger.Entries
+            .SelectMany(entry => entry.Arguments
+                .Prepend(entry.Template)
+                .Append(entry.Exception)
+                .Append(entry.Exception?.Message))
+            .Select(value => value?.ToString() ?? string.Empty)
+            .ToArray();
+        fixture.Logger.Entries.Should().OnlyContain(entry => entry.Exception == null);
+        loggedData.Should().NotContain(value => value.Contains("bt-private", StringComparison.Ordinal));
+        loggedData.Should().NotContain(value => value.Contains("секретная команда", StringComparison.Ordinal));
+        loggedData.Should().NotContain(value => value.Contains("123456", StringComparison.Ordinal));
+        loggedData.Should().NotContain(value => value.Contains("0.987654", StringComparison.Ordinal));
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task BufferedCursor_ReadAfterOwnerDisposalThrowsObjectDisposed()
+    {
+        var session = new TestBufferedCaptureSession("bt-mic");
+        var cursor = session.OpenCursor(0);
+        await session.DisposeAsync();
+
+        var action = async () => await ConsumeAvailableFramesAsync(cursor, CancellationToken.None);
+
+        await action.Should().ThrowAsync<ObjectDisposedException>();
+    }
+
+    private static VoiceActivityResult SuccessfulActivity(long commandStartSampleOffset = 24_000)
+    {
+        var audio = new CapturedCommandAudio(
+            new byte[32_000],
+            AudioFormat.Pcm16KhzMono,
+            TimeSpan.FromSeconds(1));
+        return new VoiceActivityResult(
+            true,
+            TimeSpan.FromSeconds(1),
+            audio,
+            new VoiceActivityDiagnostics(
+                TimeSpan.FromSeconds(2),
+                TimeSpan.FromSeconds(1),
+                commandStartSampleOffset + 320,
+                commandStartSampleOffset + 15_680,
+                0.01,
+                0.25));
+    }
+
+    private static VoiceActivityResult NoSpeechActivity() => new(
+        false,
+        TimeSpan.FromSeconds(4),
+        null,
+        new VoiceActivityDiagnostics(
+            TimeSpan.FromSeconds(4),
+            TimeSpan.Zero,
+            null,
+            null,
+            0.01,
+            0.02));
+
+    private static WakeWordDetectionResult ValidDetection(long cursorStart = 0) => new(
+        "альфа",
+        0.93,
+        cursorStart + 16_000,
+        cursorStart + 24_000,
+        cursorStart + 25_600);
+
+    private static async Task ConsumeAvailableFramesAsync(
+        IVoiceAudioCursor cursor,
+        CancellationToken cancellationToken)
+    {
+        await foreach (var _ in cursor.ReadFramesAsync(cancellationToken).ConfigureAwait(false))
+        {
+        }
+    }
+
+    private static Task GetRunTask(VoicePipelineCoordinator coordinator) =>
+        (Task?)typeof(VoicePipelineCoordinator)
+            .GetField("_runTask", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?.GetValue(coordinator)
+        ?? throw new InvalidOperationException("VoicePipelineCoordinator._runTask was not found.");
+
+    private static Exception CreateFatalFailure(FatalFailureCase failureCase) => failureCase switch
+    {
+        FatalFailureCase.OutOfMemory => new OutOfMemoryException("private provider detail"),
+        FatalFailureCase.AccessViolation => new AccessViolationException("private provider detail"),
+        FatalFailureCase.AppDomainUnloaded => new AppDomainUnloadedException("private provider detail"),
+        FatalFailureCase.BadImageFormat => new BadImageFormatException("private provider detail"),
+        FatalFailureCase.InnerOutOfMemory => new InvalidOperationException(
+            "private outer detail",
+            new OutOfMemoryException("private inner detail")),
+        FatalFailureCase.AggregateBadImageFormat => new AggregateException(
+            "private aggregate detail",
+            new InvalidOperationException("ordinary failure"),
+            new BadImageFormatException("private inner detail")),
+        _ => throw new ArgumentOutOfRangeException(nameof(failureCase)),
+    };
 
     private static async IAsyncEnumerable<IReadOnlyList<AudioInputDevice>> DeviceSnapshots(
         params IReadOnlyList<AudioInputDevice>[] snapshots)
@@ -356,16 +1606,26 @@ public sealed class VoicePipelineCoordinatorTests
         }
     }
 
-    private static async IAsyncEnumerable<IReadOnlyList<AudioInputDevice>> DeviceSnapshots(
+    private static async IAsyncEnumerable<IReadOnlyList<AudioInputDevice>> FailingDeviceSnapshots(
+        Exception failure)
+    {
+        await Task.Yield();
+        throw failure;
+#pragma warning disable CS0162
+        yield break;
+#pragma warning restore CS0162
+    }
+
+    private static async IAsyncEnumerable<IReadOnlyList<AudioInputDevice>> WaitingDeviceSnapshots(
         TaskCompletionSource started,
-        params IReadOnlyList<AudioInputDevice>[] snapshots)
+        [System.Runtime.CompilerServices.EnumeratorCancellation]
+        CancellationToken cancellationToken = default)
     {
         started.TrySetResult();
-        foreach (var snapshot in snapshots)
-        {
-            yield return snapshot;
-            await Task.Yield();
-        }
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+#pragma warning disable CS0162
+        yield break;
+#pragma warning restore CS0162
     }
 
     private sealed class PipelineFixture
@@ -380,13 +1640,17 @@ public sealed class VoicePipelineCoordinatorTests
 
         public required IVoiceSettingsRepository Settings { get; init; }
 
+        public required VoiceSettings SettingsValue { get; init; }
+
         public required IVoiceModelStore Models { get; init; }
 
         public required IVoiceRuntimeProviderFactory RuntimeProviders { get; init; }
 
         public required IAudioInputDeviceService Devices { get; init; }
 
-        public required IAudioCaptureSessionFactory Captures { get; init; }
+        public required TestBufferedCaptureFactory BufferedCaptures { get; init; }
+
+        public required TestBufferedCaptureSession Buffered { get; init; }
 
         public required IWakeWordProvider Wake { get; init; }
 
@@ -396,63 +1660,80 @@ public sealed class VoicePipelineCoordinatorTests
 
         public required IVoiceSignalService Signals { get; init; }
 
-        public required TestCaptureSession WakeCapture { get; init; }
+        public required IVoiceCommandExecutionService Commands { get; init; }
 
-        public required TestCaptureSession CommandCapture { get; init; }
+        public required TestLogger<VoicePipelineCoordinator> Logger { get; init; }
 
-        public static PipelineFixture Create(bool blockWakeUntilCancellation = false)
+        public required TaskCompletionSource WakeBlocked { get; init; }
+
+        public static PipelineFixture Create(
+            int successfulWakeCyclesBeforeBlock = 1,
+            TimeSpan? cooldown = null,
+            long initialLiveEdge = 0,
+            string? endpointId = "bt-mic",
+            TimeProvider? timeProvider = null)
         {
+            var settingsValue = VoiceSettings.Default with
+            {
+                IsEnabled = true,
+                MicrophoneEndpointId = endpointId,
+                MicrophoneFriendlyName = "Bluetooth microphone",
+                Cooldown = cooldown ?? TimeSpan.Zero,
+            };
             var settings = Substitute.For<IVoiceSettingsRepository>();
-            settings.GetAsync(Arg.Any<CancellationToken>()).Returns(
-                VoiceSettings.Default with
-                {
-                    IsEnabled = true,
-                    MicrophoneEndpointId = "bt-mic",
-                    MicrophoneFriendlyName = "Bluetooth microphone",
-                    Cooldown = TimeSpan.FromMilliseconds(1),
-                });
+            settings.GetAsync(Arg.Any<CancellationToken>()).Returns(settingsValue);
 
-            var wakeModel = Model(VoiceModelProvider.WakeVosk, "wake-ru", "0.22", "WakeVosk/wake-ru/0.22");
-            var commandModel = Model(VoiceModelProvider.CommandWhisper, "whisper-base", "openai-base", "CommandWhisper/whisper-base/openai-base/ggml-base.bin");
+            var wakeModel = Model(
+                VoiceModelProvider.WakeVosk,
+                "wake-ru",
+                "0.22",
+                "WakeVosk/wake-ru/0.22");
+            var commandModel = Model(
+                VoiceModelProvider.CommandWhisper,
+                "whisper-base",
+                "openai-base",
+                "CommandWhisper/whisper-base/openai-base/ggml-base.bin");
             var models = Substitute.For<IVoiceModelStore>();
-            models.GetActiveAsync(VoiceModelProvider.WakeVosk, Arg.Any<CancellationToken>()).Returns(wakeModel);
-            models.GetActiveAsync(VoiceModelProvider.CommandWhisper, Arg.Any<CancellationToken>()).Returns(commandModel);
+            models.GetActiveAsync(VoiceModelProvider.WakeVosk, Arg.Any<CancellationToken>())
+                .Returns(wakeModel);
+            models.GetActiveAsync(VoiceModelProvider.CommandWhisper, Arg.Any<CancellationToken>())
+                .Returns(commandModel);
 
             var devices = Substitute.For<IAudioInputDeviceService>();
-            devices.ResolveAsync("bt-mic", Arg.Any<CancellationToken>()).Returns(
-                new AudioInputResolution(
-                    AudioInputResultCode.Success,
-                    new AudioInputDevice("bt-mic", "Bluetooth microphone", false, true)));
+            if (endpointId is not null)
+            {
+                devices.ResolveAsync(endpointId, Arg.Any<CancellationToken>()).Returns(
+                    new AudioInputResolution(
+                        AudioInputResultCode.Success,
+                        new AudioInputDevice(endpointId, "Bluetooth microphone", false, true)));
+            }
 
-            var wakeCapture = new TestCaptureSession("bt-mic");
-            var commandCapture = new TestCaptureSession("bt-mic");
-            var captureQueue = new Queue<IAudioCaptureSession>([wakeCapture, commandCapture]);
-            var captures = Substitute.For<IAudioCaptureSessionFactory>();
-            captures.OpenAsync("bt-mic", Arg.Any<CancellationToken>())
-                .Returns(_ => Task.FromResult(captureQueue.Dequeue()));
-
+            var buffered = new TestBufferedCaptureSession(endpointId ?? "bt-mic")
+            {
+                LatestSampleOffset = initialLiveEdge,
+                NoiseSnapshot = new AmbientNoiseSnapshot(0.01, TimeSpan.FromSeconds(3), 150),
+            };
+            var captures = new TestBufferedCaptureFactory(buffered);
+            var wakeBlocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var wake = Substitute.For<IWakeWordProvider>();
             wake.ProviderId.Returns("vosk");
-            if (blockWakeUntilCancellation)
-            {
-                wake.WaitForDetectionAsync(
-                        Arg.Any<IAudioCaptureSession>(),
-                        Arg.Any<WakeWordOptions>(),
-                        Arg.Any<CancellationToken>())
-                    .Returns(async call =>
+            var wakeCount = 0;
+            wake.WaitForDetectionAsync(
+                    Arg.Any<IVoiceAudioCursor>(),
+                    Arg.Any<WakeWordOptions>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(async call =>
+                {
+                    var cursor = call.ArgAt<IVoiceAudioCursor>(0);
+                    if (Interlocked.Increment(ref wakeCount) > successfulWakeCyclesBeforeBlock)
                     {
+                        wakeBlocked.TrySetResult();
                         await Task.Delay(Timeout.InfiniteTimeSpan, call.ArgAt<CancellationToken>(2));
-                        return new WakeWordDetectionResult("альфа", 0.93);
-                    });
-            }
-            else
-            {
-                wake.WaitForDetectionAsync(
-                        Arg.Any<IAudioCaptureSession>(),
-                        Arg.Any<WakeWordOptions>(),
-                        Arg.Any<CancellationToken>())
-                    .Returns(new WakeWordDetectionResult("альфа", 0.93));
-            }
+                    }
+
+                    await ConsumeAvailableFramesAsync(cursor, call.ArgAt<CancellationToken>(2));
+                    return ValidDetection(cursor.StartSampleOffset);
+                });
 
             var speech = Substitute.For<ISpeechToTextProvider>();
             speech.ProviderId.Returns("whisper");
@@ -461,22 +1742,48 @@ public sealed class VoicePipelineCoordinatorTests
                     Arg.Any<SpeechRecognitionOptions>(),
                     Arg.Any<CancellationToken>())
                 .Returns(new SpeechRecognitionResult("сделай громче", 0.91, true));
-
             var runtimeProviders = Substitute.For<IVoiceRuntimeProviderFactory>();
-            runtimeProviders.Create(wakeModel, commandModel).Returns(new VoiceRuntimeProviders(wake, speech));
+            runtimeProviders.Create(wakeModel, commandModel)
+                .Returns(new VoiceRuntimeProviders(wake, speech));
 
-            var audio = new CapturedCommandAudio(
-                new byte[32_000],
-                AudioFormat.Pcm16KhzMono,
-                TimeSpan.FromSeconds(1));
             var vad = Substitute.For<IVoiceActivityDetector>();
             vad.CaptureAsync(
-                    Arg.Any<IAudioCaptureSession>(),
+                    Arg.Any<IVoiceAudioCursor>(),
+                    Arg.Any<AmbientNoiseSnapshot>(),
                     Arg.Any<VoiceActivityOptions>(),
+                    Arg.Any<Action<VoiceActivityProgress>>(),
                     Arg.Any<CancellationToken>())
-                .Returns(new VoiceActivityResult(true, TimeSpan.FromSeconds(1), audio));
+                .Returns(call =>
+                {
+                    var cursor = (TestVoiceAudioCursor)call.ArgAt<IVoiceAudioCursor>(0);
+                    call.ArgAt<Action<VoiceActivityProgress>>(3)(
+                        new VoiceActivityProgress(cursor.StartSampleOffset + 320, 0.01, 0.25));
+                    cursor.Owner.LatestSampleOffset = cursor.StartSampleOffset + 16_000;
+                    return SuccessfulActivity(cursor.StartSampleOffset);
+                });
             var signals = Substitute.For<IVoiceSignalService>();
+            var commands = Substitute.For<IVoiceCommandExecutionService>();
+            commands.ExecuteAsync(
+                    Arg.Any<string>(),
+                    Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(call =>
+                {
+                    var request = new CommandRequest(CommandId.From("audio.change-volume"));
+                    call.Arg<Action<VoiceCommandExecutionProgress>>()(
+                        new VoiceCommandExecutionProgress(
+                            request.CommandId,
+                            IntentResolutionStatus.Resolved,
+                            1));
+                    return new VoiceCommandExecutionResult(
+                        new IntentResolutionResult(
+                            IntentResolutionStatus.Resolved,
+                            request,
+                            1),
+                        CommandExecutionResult.Succeeded(request.CommandId));
+                });
             var state = new VoicePipelineStateStore();
+            var logger = new TestLogger<VoicePipelineCoordinator>();
             var coordinator = new VoicePipelineCoordinator(
                 settings,
                 models,
@@ -485,24 +1792,29 @@ public sealed class VoicePipelineCoordinatorTests
                 captures,
                 vad,
                 signals,
+                commands,
                 state,
-                TimeProvider.System);
+                timeProvider ?? TimeProvider.System,
+                logger);
 
             return new PipelineFixture
             {
                 Coordinator = coordinator,
                 State = state,
                 Settings = settings,
+                SettingsValue = settingsValue,
                 Models = models,
                 RuntimeProviders = runtimeProviders,
                 Devices = devices,
-                Captures = captures,
+                BufferedCaptures = captures,
+                Buffered = buffered,
                 Wake = wake,
                 Speech = speech,
                 VoiceActivity = vad,
                 Signals = signals,
-                WakeCapture = wakeCapture,
-                CommandCapture = commandCapture,
+                Commands = commands,
+                Logger = logger,
+                WakeBlocked = wakeBlocked,
             };
         }
 
@@ -522,19 +1834,204 @@ public sealed class VoicePipelineCoordinatorTests
                 DateTimeOffset.Parse("2026-07-18T00:00:00+03:00"));
     }
 
-    private sealed class TestCaptureSession(string endpointId) : IAudioCaptureSession
+    private sealed class TestBufferedCaptureFactory : IBufferedVoiceCaptureSessionFactory
     {
-        public int DisposeCount { get; private set; }
+        private readonly object _sync = new();
+        private readonly Queue<object> _results = [];
+        private readonly Dictionary<int, TaskCompletionSource> _openWaiters = [];
+
+        public TestBufferedCaptureFactory(TestBufferedCaptureSession initial) => Enqueue(initial);
+
+        public int OpenCount { get; private set; }
+
+        public List<string> OpenedEndpoints { get; } = [];
+
+        public void Enqueue(TestBufferedCaptureSession session)
+        {
+            lock (_sync)
+            {
+                _results.Enqueue(session);
+            }
+        }
+
+        public void FailNext(Exception exception)
+        {
+            lock (_sync)
+            {
+                _results.Clear();
+                _results.Enqueue(exception);
+            }
+        }
+
+        public void FailNext(
+            Func<string, CancellationToken, Task<IBufferedVoiceCaptureSession>> open)
+        {
+            lock (_sync)
+            {
+                _results.Clear();
+                _results.Enqueue(open);
+            }
+        }
+
+        public Task WaitForOpenCountAsync(int count)
+        {
+            lock (_sync)
+            {
+                if (OpenCount >= count)
+                {
+                    return Task.CompletedTask;
+                }
+
+                if (!_openWaiters.TryGetValue(count, out var waiter))
+                {
+                    waiter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _openWaiters.Add(count, waiter);
+                }
+
+                return waiter.Task;
+            }
+        }
+
+        public Task<IBufferedVoiceCaptureSession> OpenAsync(
+            string endpointId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_sync)
+            {
+                OpenCount++;
+                OpenedEndpoints.Add(endpointId);
+                foreach (var waiter in _openWaiters.Where(pair => pair.Key <= OpenCount).ToArray())
+                {
+                    waiter.Value.TrySetResult();
+                    _openWaiters.Remove(waiter.Key);
+                }
+
+                if (_results.Count == 0)
+                {
+                    throw new InvalidOperationException("No buffered capture result was configured.");
+                }
+
+                var result = _results.Dequeue();
+                if (result is Exception exception)
+                {
+                    return Task.FromException<IBufferedVoiceCaptureSession>(exception);
+                }
+
+                if (result is Func<string, CancellationToken, Task<IBufferedVoiceCaptureSession>> open)
+                {
+                    return open(endpointId, cancellationToken);
+                }
+
+                return Task.FromResult<IBufferedVoiceCaptureSession>(
+                    (TestBufferedCaptureSession)result);
+            }
+        }
+    }
+
+    private sealed class TestBufferedCaptureSession(string endpointId) : IBufferedVoiceCaptureSession
+    {
+        private readonly List<TestVoiceAudioCursor> _cursors = [];
+        private readonly Queue<long> _cursorReadEnds = [];
+        private bool _disposed;
 
         public string EndpointId { get; } = endpointId;
 
-        public AudioFormat Format => AudioFormat.Pcm16KhzMono;
+        public AudioFormat Format { get; set; } = AudioFormat.Pcm16KhzMono;
 
-        public async IAsyncEnumerable<AudioFrame> ReadFramesAsync(
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        public long EarliestSampleOffset { get; set; }
+
+        public long LatestSampleOffset { get; set; }
+
+        public AmbientNoiseSnapshot NoiseSnapshot { get; set; } = AmbientNoiseSnapshot.Empty;
+
+        public List<long> OpenedOffsets { get; } = [];
+
+        public int DisposeCount { get; private set; }
+
+        public Exception? DisposeFailure { get; set; }
+
+        public Exception? TerminalFailure { get; set; }
+
+        public bool IsDisposed => _disposed;
+
+        public void QueueCursorReadEnd(long endSampleOffset) => _cursorReadEnds.Enqueue(endSampleOffset);
+
+        public IVoiceAudioCursor OpenCursor(long startSampleOffset)
         {
-            await Task.CompletedTask;
-            yield break;
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (startSampleOffset < EarliestSampleOffset || startSampleOffset > LatestSampleOffset)
+            {
+                throw new AudioCaptureException(
+                    AudioInputResultCode.BufferOverrun,
+                    "The requested test cursor range is unavailable.");
+            }
+
+            OpenedOffsets.Add(startSampleOffset);
+            var cursor = new TestVoiceAudioCursor(
+                this,
+                startSampleOffset,
+                _cursorReadEnds.Count > 0 ? _cursorReadEnds.Dequeue() : null);
+            _cursors.Add(cursor);
+            return cursor;
+        }
+
+        public TestVoiceAudioCursor CursorAt(long startSampleOffset) =>
+            _cursors.Single(cursor => cursor.StartSampleOffset == startSampleOffset);
+
+        public ValueTask DisposeAsync()
+        {
+            DisposeCount++;
+            _disposed = true;
+            return DisposeFailure is null
+                ? ValueTask.CompletedTask
+                : ValueTask.FromException(DisposeFailure);
+        }
+    }
+
+    private sealed class TestVoiceAudioCursor(
+        TestBufferedCaptureSession owner,
+        long startSampleOffset,
+        long? configuredReadEndSampleOffset) : IVoiceAudioCursor
+    {
+        public TestBufferedCaptureSession Owner { get; } = owner;
+
+        public AudioFormat Format => Owner.Format;
+
+        public long StartSampleOffset { get; } = startSampleOffset;
+
+        public int DisposeCount { get; private set; }
+
+        public async IAsyncEnumerable<SequencedAudioFrame> ReadFramesAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation]
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ObjectDisposedException.ThrowIf(DisposeCount > 0, this);
+            ObjectDisposedException.ThrowIf(Owner.IsDisposed, Owner);
+            if (Owner.TerminalFailure is not null)
+            {
+                throw Owner.TerminalFailure;
+            }
+
+            var endSampleOffset = configuredReadEndSampleOffset
+                ?? checked(StartSampleOffset + 25_600);
+            if (endSampleOffset < StartSampleOffset)
+            {
+                throw new AudioCaptureException(
+                    AudioInputResultCode.BufferOverrun,
+                    "The configured test cursor range is invalid.");
+            }
+
+            Owner.LatestSampleOffset = Math.Max(Owner.LatestSampleOffset, endSampleOffset);
+            var sampleCount = checked((int)(endSampleOffset - StartSampleOffset));
+            await Task.Yield();
+            ObjectDisposedException.ThrowIf(Owner.IsDisposed, Owner);
+            yield return new SequencedAudioFrame(
+                new byte[checked(sampleCount * sizeof(short))],
+                TimeSpan.FromSeconds(sampleCount / 16_000d),
+                StartSampleOffset,
+                endSampleOffset);
         }
 
         public ValueTask DisposeAsync()
@@ -542,5 +2039,180 @@ public sealed class VoicePipelineCoordinatorTests
             DisposeCount++;
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private readonly object _sync = new();
+        private readonly List<ManualTimer> _timers = [];
+        private DateTimeOffset _utcNow = DateTimeOffset.Parse("2026-07-19T00:00:00+00:00");
+
+        public TaskCompletionSource TimerScheduled { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            lock (_sync)
+            {
+                return _utcNow;
+            }
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            ArgumentNullException.ThrowIfNull(callback);
+            var timer = new ManualTimer(this, callback, state, dueTime, period);
+            lock (_sync)
+            {
+                _timers.Add(timer);
+            }
+
+            TimerScheduled.TrySetResult();
+            return timer;
+        }
+
+        public void Advance(TimeSpan elapsed)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(elapsed, TimeSpan.Zero);
+            ManualTimer[] dueTimers;
+            lock (_sync)
+            {
+                _utcNow += elapsed;
+                dueTimers = _timers.Where(timer => timer.IsDue(_utcNow)).ToArray();
+            }
+
+            foreach (var timer in dueTimers)
+            {
+                timer.Fire();
+            }
+        }
+
+        private sealed class ManualTimer(
+            ManualTimeProvider owner,
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period) : ITimer
+        {
+            private readonly object _sync = new();
+            private DateTimeOffset? _dueAt = DueAt(owner.GetUtcNow(), dueTime);
+            private TimeSpan _period = period;
+            private bool _disposed;
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                var now = owner.GetUtcNow();
+                lock (_sync)
+                {
+                    if (_disposed)
+                    {
+                        return false;
+                    }
+
+                    _dueAt = DueAt(now, dueTime);
+                    _period = period;
+                    return true;
+                }
+            }
+
+            public void Dispose()
+            {
+                lock (_sync)
+                {
+                    _disposed = true;
+                    _dueAt = null;
+                }
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+
+            public bool IsDue(DateTimeOffset now)
+            {
+                lock (_sync)
+                {
+                    return !_disposed && _dueAt is not null && _dueAt <= now;
+                }
+            }
+
+            public void Fire()
+            {
+                var now = owner.GetUtcNow();
+                lock (_sync)
+                {
+                    if (_disposed || _dueAt is null || _dueAt > now)
+                    {
+                        return;
+                    }
+
+                    _dueAt = _period == Timeout.InfiniteTimeSpan
+                        ? null
+                        : DueAt(now, _period);
+                }
+
+                callback(state);
+            }
+
+            private static DateTimeOffset? DueAt(DateTimeOffset now, TimeSpan delay) =>
+                delay == Timeout.InfiniteTimeSpan ? null : now + delay;
+        }
+    }
+
+    private sealed class TestLogger<T> : ILogger<T>
+    {
+        private readonly object _sync = new();
+
+        public List<LogEntry> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            var values = state as IReadOnlyList<KeyValuePair<string, object?>>;
+            var template = values?
+                .FirstOrDefault(value => string.Equals(value.Key, "{OriginalFormat}", StringComparison.Ordinal))
+                .Value as string
+                ?? state?.ToString()
+                ?? string.Empty;
+            var arguments = values?
+                .Where(value => !string.Equals(value.Key, "{OriginalFormat}", StringComparison.Ordinal))
+                .Select(value => value.Value)
+                .ToArray()
+                ?? [];
+            lock (_sync)
+            {
+                Entries.Add(new LogEntry(logLevel, template, arguments, exception));
+            }
+        }
+    }
+
+    private sealed record LogEntry(
+        LogLevel Level,
+        string Template,
+        IReadOnlyList<object?> Arguments,
+        Exception? Exception);
+
+    public enum FatalFailureCase
+    {
+        OutOfMemory,
+        AccessViolation,
+        AppDomainUnloaded,
+        BadImageFormat,
+        InnerOutOfMemory,
+        AggregateBadImageFormat,
     }
 }

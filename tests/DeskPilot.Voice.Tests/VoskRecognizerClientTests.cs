@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Runtime.InteropServices;
 using DeskPilot.Voice.Vosk;
 using FluentAssertions;
 using Xunit;
@@ -6,18 +8,38 @@ namespace DeskPilot.Voice.Tests;
 
 public sealed class VoskRecognizerClientTests
 {
+    [Theory]
+    [InlineData(nameof(VoskNativeMethods.ModelNew), "modelPath")]
+    [InlineData(nameof(VoskNativeMethods.RecognizerNewGrammar), "grammar")]
+    public void NativeTextParameters_UseExplicitUtf8Marshalling(
+        string methodName,
+        string parameterName)
+    {
+        var method = typeof(VoskNativeMethods).GetMethod(
+            methodName,
+            BindingFlags.Static | BindingFlags.NonPublic);
+        var parameter = method!.GetParameters().Single(candidate => candidate.Name == parameterName);
+
+        parameter.GetCustomAttribute<MarshalAsAttribute>()!.Value
+            .Should().Be(UnmanagedType.LPUTF8Str);
+    }
+
     [Fact]
     public void Accept_FinalNativeResult_ParsesResultAndCopiesOnlyCurrentFrame()
     {
         var native = new FakeNativeRecognizer(
             acceptResult: true,
-            resultJson: "{\"text\":\"альфа\",\"result\":[{\"conf\":0.87,\"word\":\"альфа\"}]}");
+            resultJson: "{\"text\":\"альфа\",\"result\":[{\"conf\":0.87,\"start\":0.25,\"end\":0.75,\"word\":\"альфа\"}]}");
         using var client = new VoskRecognizerClient(native, new TrackingDisposable());
         var buffer = new byte[] { 99, 1, 2, 98 };
 
         var result = client.Accept(new ReadOnlyMemory<byte>(buffer, 1, 2));
 
-        result.Should().Be(new VoskRecognition("альфа", 0.87, true));
+        result.Should().BeEquivalentTo(new VoskRecognition(
+            "альфа",
+            0.87,
+            true,
+            [new VoskWordTiming("альфа", 0.87, TimeSpan.FromSeconds(0.25), TimeSpan.FromSeconds(0.75))]));
         native.AcceptedBytes.Should().Equal(1, 2);
         native.ResultCallCount.Should().Be(1);
         native.PartialResultCallCount.Should().Be(0);
@@ -33,7 +55,10 @@ public sealed class VoskRecognizerClientTests
 
         var result = client.Accept(new byte[] { 0, 0 });
 
-        result.Should().Be(new VoskRecognition("альфа", 0, false));
+        result.Text.Should().Be("альфа");
+        result.Confidence.Should().Be(0);
+        result.IsFinal.Should().BeFalse();
+        result.Words.Should().BeEmpty();
         native.ResultCallCount.Should().Be(0);
         native.PartialResultCallCount.Should().Be(1);
     }
@@ -43,12 +68,16 @@ public sealed class VoskRecognizerClientTests
     {
         var native = new FakeNativeRecognizer(
             acceptResult: false,
-            finalJson: "{\"text\":\"альфа\",\"result\":[{\"conf\":0.89,\"word\":\"альфа\"}]}");
+            finalJson: "{\"text\":\"альфа\",\"result\":[{\"conf\":0.89,\"start\":0.10,\"end\":0.60,\"word\":\"альфа\"}]}");
         using var client = new VoskRecognizerClient(native, new TrackingDisposable());
 
         var result = client.Complete();
 
-        result.Should().Be(new VoskRecognition("альфа", 0.89, true));
+        result.Should().BeEquivalentTo(new VoskRecognition(
+            "альфа",
+            0.89,
+            true,
+            [new VoskWordTiming("альфа", 0.89, TimeSpan.FromSeconds(0.10), TimeSpan.FromSeconds(0.60))]));
         native.FinalResultCallCount.Should().Be(1);
     }
 

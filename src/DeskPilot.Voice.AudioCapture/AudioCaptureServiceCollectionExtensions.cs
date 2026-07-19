@@ -16,7 +16,8 @@ public static class AudioCaptureServiceCollectionExtensions
         services.AddSingleton<IAudioInputDeviceService, NAudioInputDeviceService>();
         services.AddSingleton<IWindowsCaptureClientFactory, NAudioWindowsCaptureClientFactory>();
         services.AddSingleton<IAudioCaptureSessionFactory, NAudioCaptureFactory>();
-        services.AddSingleton<IVoiceActivityDetector, EnergyVoiceActivityDetector>();
+        services.AddSingleton<IBufferedVoiceCaptureSessionFactory, BufferedVoiceCaptureSessionFactory>();
+        services.AddSingleton<IVoiceActivityDetector, AdaptiveVoiceActivityDetector>();
         return services;
     }
 }

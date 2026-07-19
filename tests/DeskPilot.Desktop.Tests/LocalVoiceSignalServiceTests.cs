@@ -48,6 +48,51 @@ public sealed class LocalVoiceSignalServiceTests
         player.CallCount.Should().Be(0);
     }
 
+    [Theory]
+    [InlineData(VoiceSignal.Success)]
+    [InlineData(VoiceSignal.Failure)]
+    public async Task PlayAsync_SuccessOrFailure_RunsToneOutsideDedicatedCallerThread(VoiceSignal signal)
+    {
+        var player = new BlockingTonePlayer();
+        var service = new LocalVoiceSignalService(player);
+        var playbackPublished = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callerFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callerThread = new Thread(() =>
+        {
+            try
+            {
+                playbackPublished.TrySetResult(service.PlayAsync(signal, CancellationToken.None));
+            }
+            catch (Exception exception)
+            {
+                playbackPublished.TrySetException(exception);
+            }
+            finally
+            {
+                callerFinished.TrySetResult();
+            }
+        });
+
+        callerThread.Start();
+        try
+        {
+            var playback = await playbackPublished.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await player.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+            playback.IsCompleted.Should().BeFalse();
+            player.Signal.Should().Be(signal);
+            player.PlayThreadId.Should().NotBe(callerThread.ManagedThreadId);
+            player.Release.TrySetResult();
+            await playback.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            player.Release.TrySetResult();
+            await callerFinished.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            callerThread.Join();
+        }
+    }
+
     [Fact]
     public void Resolve_UnknownSignal_ThrowsArgumentOutOfRangeException()
     {
@@ -68,10 +113,13 @@ public sealed class LocalVoiceSignalServiceTests
 
         public int CallCount { get; private set; }
 
+        public int? PlayThreadId { get; private set; }
+
         public void Play(VoiceSignal signal)
         {
             CallCount++;
             Signal = signal;
+            PlayThreadId = Environment.CurrentManagedThreadId;
             Started.TrySetResult();
             Release.Task.GetAwaiter().GetResult();
         }

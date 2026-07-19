@@ -18,8 +18,10 @@ public interface IVoiceActivityDetector
 {
     /// <summary>Captures one bounded command after speech starts.</summary>
     Task<VoiceActivityResult> CaptureAsync(
-        IAudioCaptureSession input,
+        IVoiceAudioCursor cursor,
+        AmbientNoiseSnapshot ambientNoise,
         VoiceActivityOptions options,
+        Action<VoiceActivityProgress> progress,
         CancellationToken cancellationToken);
 }
 
@@ -31,7 +33,7 @@ public interface IWakeWordProvider
 
     /// <summary>Waits for a wake phrase detection event.</summary>
     Task<WakeWordDetectionResult> WaitForDetectionAsync(
-        IAudioCaptureSession audio,
+        IVoiceAudioCursor audio,
         WakeWordOptions options,
         CancellationToken cancellationToken);
 }
@@ -81,6 +83,12 @@ public sealed class SpeechRecognitionException : Exception
 
     /// <summary>Gets the safe failure code.</summary>
     public SpeechRecognitionFailureCode Code { get; }
+
+    /// <summary>Gets the recognized text retained for local diagnostics.</summary>
+    public string? RecognizedText { get; init; }
+
+    /// <summary>Gets the recognition confidence retained for local diagnostics.</summary>
+    public double? RecognitionConfidence { get; init; }
 }
 
 /// <summary>Identifies a short local voice-pipeline feedback signal.</summary>
@@ -103,24 +111,126 @@ public interface IVoiceSignalService
 
 /// <summary>Configures speech end detection.</summary>
 public sealed record VoiceActivityOptions(
+    TimeSpan PreRollDuration,
     TimeSpan MinimumSpeechDuration,
-    TimeSpan SilenceTimeout,
+    TimeSpan InitialSilenceTimeout,
+    TimeSpan EndSilenceTimeout,
     TimeSpan MaximumCommandDuration,
     double Sensitivity = 0.80)
 {
     /// <summary>Gets the DeskPilot default voice activity configuration.</summary>
     public static VoiceActivityOptions Default { get; } = new(
-        TimeSpan.FromMilliseconds(250),
-        TimeSpan.FromMilliseconds(900),
+        TimeSpan.FromMilliseconds(300),
+        TimeSpan.FromMilliseconds(150),
+        TimeSpan.FromSeconds(4),
+        TimeSpan.FromMilliseconds(1_200),
         TimeSpan.FromSeconds(10),
         0.80);
+}
+
+/// <summary>Describes in-progress voice activity metrics.</summary>
+public sealed record VoiceActivityProgress(
+    long SpeechStartSampleOffset,
+    double NoiseFloorRms,
+    double PeakRms);
+
+/// <summary>Describes diagnostics captured during voice activity detection.</summary>
+public sealed record VoiceActivityDiagnostics(
+    TimeSpan ObservedDuration,
+    TimeSpan CapturedDuration,
+    long? SpeechStartSampleOffset,
+    long? SpeechEndSampleOffset,
+    double NoiseFloorRms,
+    double PeakRms)
+{
+    /// <summary>Gets an empty diagnostics snapshot.</summary>
+    public static VoiceActivityDiagnostics Empty { get; } = new(
+        TimeSpan.Zero,
+        TimeSpan.Zero,
+        null,
+        null,
+        0,
+        0);
 }
 
 /// <summary>Contains a voice activity detection result.</summary>
 public sealed record VoiceActivityResult(
     bool SpeechDetected,
     TimeSpan Duration,
-    CapturedCommandAudio? Audio);
+    CapturedCommandAudio? Audio,
+    VoiceActivityDiagnostics Diagnostics);
+
+/// <summary>Identifies a safe wake-word detection failure.</summary>
+public enum WakeWordDetectionFailureCode
+{
+    /// <summary>The provider returned missing or incoherent wake-word timing.</summary>
+    InvalidTiming,
+}
+
+/// <summary>Represents a typed safe wake-word detection failure.</summary>
+public sealed class WakeWordDetectionException : Exception
+{
+    /// <summary>Creates a typed wake-word detection failure.</summary>
+    public WakeWordDetectionException(
+        WakeWordDetectionFailureCode code,
+        string message,
+        Exception? innerException = null)
+        : base(message, innerException)
+    {
+        Code = code;
+    }
+
+    /// <summary>Gets the safe failure code.</summary>
+    public WakeWordDetectionFailureCode Code { get; }
+}
 
 /// <summary>Contains a wake phrase detection result.</summary>
-public sealed record WakeWordDetectionResult(string Phrase, double Confidence);
+public sealed record WakeWordDetectionResult
+{
+    /// <summary>Creates an immutable detection with monotonic absolute offsets.</summary>
+    public WakeWordDetectionResult(
+        string phrase,
+        double confidence,
+        long wakeStartSampleOffset,
+        long wakeEndSampleOffset,
+        long detectionSampleOffset)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(wakeStartSampleOffset);
+        ArgumentOutOfRangeException.ThrowIfNegative(wakeEndSampleOffset);
+        ArgumentOutOfRangeException.ThrowIfNegative(detectionSampleOffset);
+        if (wakeEndSampleOffset < wakeStartSampleOffset)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(wakeEndSampleOffset),
+                "Wake end sample offset must not precede wake start.");
+        }
+
+        if (detectionSampleOffset < wakeEndSampleOffset)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(detectionSampleOffset),
+                "Detection sample offset must not precede wake end.");
+        }
+
+        Phrase = phrase;
+        Confidence = confidence;
+        WakeStartSampleOffset = wakeStartSampleOffset;
+        WakeEndSampleOffset = wakeEndSampleOffset;
+        DetectionSampleOffset = detectionSampleOffset;
+    }
+
+    /// <summary>Gets the detected phrase.</summary>
+    public string Phrase { get; }
+
+    /// <summary>Gets the provider confidence.</summary>
+    public double Confidence { get; }
+
+    /// <summary>Gets the absolute wake-word start sample offset.</summary>
+    public long WakeStartSampleOffset { get; }
+
+    /// <summary>Gets the absolute wake-word end sample offset.</summary>
+    public long WakeEndSampleOffset { get; }
+
+    /// <summary>Gets the absolute sample offset consumed when detection completed.</summary>
+    public long DetectionSampleOffset { get; }
+}

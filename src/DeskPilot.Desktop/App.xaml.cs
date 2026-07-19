@@ -36,16 +36,16 @@ public partial class App : System.Windows.Application
             await _host.StartAsync();
             await _host.Services.GetRequiredService<IDatabaseInitializer>().InitializeAsync(CancellationToken.None);
             var seedInitializer = _host.Services.GetService<SeedVoiceModelInitializer>();
-            var seedReady = false;
+            bool? seedInitializationSucceeded = null;
             if (seedInitializer is not null)
             {
                 var results = await seedInitializer.InitializeAsync(CancellationToken.None);
-                seedReady = results.All(result => result.Code == VoiceModelResultCode.Success);
+                seedInitializationSucceeded = results.All(result => result.Code == VoiceModelResultCode.Success);
             }
 
             await _host.Services.GetRequiredService<ModuleCatalog>().InitializeAsync(_host.Services.GetRequiredService<IModuleContext>(), CancellationToken.None);
             var voiceSettings = await _host.Services.GetRequiredService<IVoiceSettingsRepository>().GetAsync(CancellationToken.None);
-            if (seedReady && voiceSettings.IsEnabled)
+            if (ShouldEnableVoicePipeline(voiceSettings.IsEnabled, seedInitializationSucceeded))
             {
                 await _host.Services.GetRequiredService<IVoicePipelineController>().EnableAsync(CancellationToken.None);
             }
@@ -113,6 +113,11 @@ public partial class App : System.Windows.Application
 
         return builder.Build();
     }
+
+    internal static bool ShouldEnableVoicePipeline(
+        bool voiceEnabled,
+        bool? seedInitializationSucceeded) =>
+        voiceEnabled && seedInitializationSucceeded is not false;
 
     internal static async Task ShutdownHostAsync(IHost host, TimeSpan timeout)
     {

@@ -1,7 +1,9 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using DeskPilot.Application.Voice;
+using DeskPilot.Core.Commands;
 using DeskPilot.Core.Voice;
 using DeskPilot.Voice.Abstractions;
 using Microsoft.Extensions.Logging;
@@ -10,13 +12,19 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace DeskPilot.Desktop.ViewModels;
 
 /// <summary>Exposes the local voice pipeline without performing native work on the WPF thread.</summary>
-public sealed partial class VoiceControlViewModel : ObservableObject
+public sealed partial class VoiceControlViewModel : ObservableObject, IDisposable
 {
     private readonly IVoiceSettingsRepository _settings;
     private readonly IAudioInputDeviceService _devices;
     private readonly IVoicePipelineController _controller;
     private readonly IVoicePipelineStateSource _state;
     private readonly ILogger<VoiceControlViewModel> _logger;
+    private readonly SynchronizationContext? _uiSynchronizationContext;
+    private readonly object _lifecycleGate = new();
+    private long _nextSnapshotSequence;
+    private long _lastAppliedSnapshotSequence;
+    private bool _isDisposed;
+    private bool _isSnapshotSubscribed;
 
     [ObservableProperty]
     private AudioInputDevice? _selectedMicrophone;
@@ -27,11 +35,41 @@ public sealed partial class VoiceControlViewModel : ObservableObject
     [ObservableProperty]
     private double _sensitivity = VoiceSettings.Default.VoiceActivitySensitivity;
 
-    [ObservableProperty]
     private VoiceAssistantState _currentState = VoiceAssistantState.Disabled;
+
+    /// <summary>Gets the current voice-pipeline state.</summary>
+    public VoiceAssistantState CurrentState
+    {
+        get => _currentState;
+        set
+        {
+            if (SetProperty(ref _currentState, value))
+            {
+                lock (_lifecycleGate)
+                {
+                    if (!_isDisposed)
+                    {
+                        OnPropertyChanged(nameof(CurrentStateText));
+                    }
+                }
+            }
+        }
+    }
 
     [ObservableProperty]
     private string _lastRecognizedText = "—";
+
+    [ObservableProperty]
+    private string _lastCommandOutcome = "—";
+
+    [ObservableProperty]
+    private string _captureStatus = "Микрофон не активен";
+
+    [ObservableProperty]
+    private string _capturedDuration = "—";
+
+    [ObservableProperty]
+    private string _audioLevelDiagnostics = "—";
 
     [ObservableProperty]
     private string _activeWakeModelVersion = "Не выбрана";
@@ -60,8 +98,8 @@ public sealed partial class VoiceControlViewModel : ObservableObject
         _state = state ?? throw new ArgumentNullException(nameof(state));
         Models = models ?? throw new ArgumentNullException(nameof(models));
         _logger = logger ?? NullLogger<VoiceControlViewModel>.Instance;
-        _state.SnapshotChanged += OnSnapshotChanged;
-        ApplySnapshot(_state.Snapshot);
+        _uiSynchronizationContext = SynchronizationContext.Current;
+        InitializeSnapshotProjection();
     }
 
     /// <summary>Gets the active and remembered capture endpoints.</summary>
@@ -95,7 +133,7 @@ public sealed partial class VoiceControlViewModel : ObservableObject
             Sensitivity = settings.VoiceActivitySensitivity;
             await RefreshMicrophonesCoreAsync(settings, CancellationToken.None).ConfigureAwait(true);
             await Models.InitializeAsync().ConfigureAwait(true);
-            ApplySnapshot(_state.Snapshot);
+            ApplyCurrentSnapshot();
         }
         catch (Exception exception)
         {
@@ -275,15 +313,142 @@ public sealed partial class VoiceControlViewModel : ObservableObject
         }
     }
 
-    private void OnSnapshotChanged(object? sender, VoicePipelineSnapshot snapshot) => ApplySnapshot(snapshot);
-
-    private void ApplySnapshot(VoicePipelineSnapshot snapshot)
+    /// <inheritdoc />
+    public void Dispose()
     {
+        lock (_lifecycleGate)
+        {
+            if (_isDisposed)
+            {
+                return;
+            }
+
+            _isDisposed = true;
+            if (_isSnapshotSubscribed)
+            {
+                _state.SnapshotChanged -= OnSnapshotChanged;
+                _isSnapshotSubscribed = false;
+            }
+        }
+    }
+
+    private void OnSnapshotChanged(object? sender, VoicePipelineSnapshot snapshot)
+    {
+        long sequence;
+        lock (_lifecycleGate)
+        {
+            if (_isDisposed)
+            {
+                return;
+            }
+
+            sequence = ++_nextSnapshotSequence;
+        }
+
+        if (_uiSynchronizationContext is null
+            || ReferenceEquals(SynchronizationContext.Current, _uiSynchronizationContext))
+        {
+            ApplySnapshotIfCurrent(snapshot, sequence);
+            return;
+        }
+
+        _uiSynchronizationContext.Post(
+            static state =>
+            {
+                var update = ((VoiceControlViewModel ViewModel, VoicePipelineSnapshot Snapshot, long Sequence))state!;
+                update.ViewModel.ApplySnapshotIfCurrent(update.Snapshot, update.Sequence);
+            },
+            (this, snapshot, sequence));
+    }
+
+    private void InitializeSnapshotProjection()
+    {
+        lock (_lifecycleGate)
+        {
+            var initialSnapshot = _state.Snapshot;
+            ApplySnapshotLocked(initialSnapshot, ++_nextSnapshotSequence);
+            _state.SnapshotChanged += OnSnapshotChanged;
+            _isSnapshotSubscribed = true;
+
+            var currentSnapshot = _state.Snapshot;
+            if (!ReferenceEquals(currentSnapshot, initialSnapshot))
+            {
+                ApplySnapshotLocked(currentSnapshot, ++_nextSnapshotSequence);
+            }
+        }
+    }
+
+    private void ApplyCurrentSnapshot()
+    {
+        lock (_lifecycleGate)
+        {
+            if (!_isDisposed)
+            {
+                ApplySnapshotLocked(_state.Snapshot, ++_nextSnapshotSequence);
+            }
+        }
+    }
+
+    private void ApplySnapshotIfCurrent(VoicePipelineSnapshot snapshot, long sequence)
+    {
+        lock (_lifecycleGate)
+        {
+            if (_isDisposed || sequence <= _lastAppliedSnapshotSequence)
+            {
+                return;
+            }
+
+            ApplySnapshotLocked(snapshot, sequence);
+        }
+    }
+
+    private void ApplySnapshotLocked(VoicePipelineSnapshot snapshot, long sequence)
+    {
+        _lastAppliedSnapshotSequence = sequence;
         CurrentState = snapshot.State;
+        if (_isDisposed)
+        {
+            return;
+        }
+
         LastRecognizedText = snapshot.LastRecognizedText ?? "—";
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        LastCommandOutcome = ToCommandOutcome(snapshot);
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        CaptureStatus = snapshot.IsCaptureActive ? "Микрофон активен" : "Микрофон не активен";
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        CapturedDuration = ToCapturedDuration(snapshot);
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        AudioLevelDiagnostics = ToAudioLevelDiagnostics(snapshot);
+        if (_isDisposed)
+        {
+            return;
+        }
+
         ActiveWakeModelVersion = snapshot.ActiveWakeModelVersion ?? "Не выбрана";
+        if (_isDisposed)
+        {
+            return;
+        }
+
         ActiveCommandModelVersion = snapshot.ActiveCommandModelVersion ?? "Не выбрана";
-        if (!string.IsNullOrWhiteSpace(snapshot.SafeMessage))
+        if (!_isDisposed && !string.IsNullOrWhiteSpace(snapshot.SafeMessage))
         {
             StatusMessage = snapshot.SafeMessage;
         }
@@ -306,12 +471,69 @@ public sealed partial class VoiceControlViewModel : ObservableObject
         VoiceAssistantState.ListeningForCommand => "Слушаю команду",
         VoiceAssistantState.DetectingSpeechEnd => "Определяю окончание речи",
         VoiceAssistantState.RecognizingCommand => "Распознаю локально",
+        VoiceAssistantState.ResolvingCommand => "Определяю команду",
+        VoiceAssistantState.ExecutingCommand => "Выполняю команду",
         VoiceAssistantState.Cooldown => "Пауза",
         VoiceAssistantState.Error => "Требуется внимание",
         _ => state.ToString(),
     };
 
-    partial void OnCurrentStateChanged(VoiceAssistantState value) => OnPropertyChanged(nameof(CurrentStateText));
+    private static string ToCommandOutcome(VoicePipelineSnapshot snapshot)
+    {
+        if (snapshot.ErrorCode is "speech-not-detected" or "speech-not-recognized")
+        {
+            return "Команда не распознана";
+        }
+
+        if (snapshot.ErrorCode == "speech-confidence-low"
+            && !string.IsNullOrWhiteSpace(snapshot.LastRecognizedText)
+            && snapshot.LastRecognitionConfidence is double confidence)
+        {
+            return string.Create(
+                CultureInfo.InvariantCulture,
+                $"Распознано, confidence: {confidence:F2}");
+        }
+
+        return snapshot.LastResolvedCommandId is null
+            ? snapshot.LastIntentStatus switch
+            {
+                IntentResolutionStatus.NotFound => "Команда не найдена",
+                IntentResolutionStatus.Ambiguous => "Команда неоднозначна",
+                _ => "—",
+            }
+            : snapshot.LastExecutionStatus switch
+            {
+                CommandExecutionStatus.Succeeded =>
+                    $"{snapshot.LastResolvedCommandId} — выполнено",
+                CommandExecutionStatus.Rejected =>
+                    $"{snapshot.LastResolvedCommandId} — отклонено",
+                CommandExecutionStatus.Failed =>
+                    $"{snapshot.LastResolvedCommandId} — ошибка",
+                CommandExecutionStatus.NotFound =>
+                    $"{snapshot.LastResolvedCommandId} — недоступно",
+                _ => snapshot.LastResolvedCommandId,
+            };
+    }
+
+    private static string ToCapturedDuration(VoicePipelineSnapshot snapshot) =>
+        snapshot.IsCaptureActive
+        && snapshot.LastCapturedCommandDuration is TimeSpan duration
+        && duration >= TimeSpan.Zero
+            ? string.Create(CultureInfo.GetCultureInfo("ru-RU"), $"{duration.TotalSeconds:F2} с")
+            : "—";
+
+    private static string ToAudioLevelDiagnostics(VoicePipelineSnapshot snapshot) =>
+        snapshot.IsCaptureActive
+        && snapshot.LastNoiseFloorRms is double noise
+        && snapshot.LastPeakRms is double peak
+        && noise >= 0
+        && peak >= 0
+        && double.IsFinite(noise)
+        && double.IsFinite(peak)
+            ? string.Create(
+                CultureInfo.GetCultureInfo("ru-RU"),
+                $"Шум: {noise:F4}; пик: {peak:F4}")
+            : "—";
 
     partial void OnIsVoiceEnabledChanged(bool value) => OnPropertyChanged(nameof(ToggleVoiceButtonText));
 

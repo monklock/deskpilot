@@ -13,7 +13,15 @@ runtime/
 /tmp/
 publish/
 artifacts/
+.worktrees/
+/.superpowers/
 *.wav
 *.mp3
 *.gguf
 *.bin
+
+# Keep internal documentation local. Only public project documents are tracked.
+/docs/**
+!/docs/architecture.md
+!/docs/security.md
+!/docs/roadmap.md
