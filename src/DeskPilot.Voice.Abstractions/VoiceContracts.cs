@@ -81,6 +81,12 @@ public sealed class SpeechRecognitionException : Exception
 
     /// <summary>Gets the safe failure code.</summary>
     public SpeechRecognitionFailureCode Code { get; }
+
+    /// <summary>Gets the recognized text retained for local diagnostics.</summary>
+    public string? RecognizedText { get; init; }
+
+    /// <summary>Gets the recognition confidence retained for local diagnostics.</summary>
+    public double? RecognitionConfidence { get; init; }
 }
 
 /// <summary>Identifies a short local voice-pipeline feedback signal.</summary>

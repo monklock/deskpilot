@@ -87,9 +87,13 @@ public sealed class WhisperCppSpeechToTextProvider(
                 var confidence = segments.Average(segment => segment.Confidence);
                 if (confidence < options.MinimumConfidence)
                 {
-                    throw Failure(
+                    throw new SpeechRecognitionException(
                         SpeechRecognitionFailureCode.ConfidenceBelowThreshold,
-                        "Whisper recognition confidence is below the configured threshold.");
+                        "Whisper recognition confidence is below the configured threshold.")
+                    {
+                        RecognizedText = text,
+                        RecognitionConfidence = confidence,
+                    };
                 }
 
                 return new SpeechRecognitionResult(text, confidence, true);
