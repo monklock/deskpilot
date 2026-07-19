@@ -282,17 +282,6 @@ public sealed class BufferedVoiceCaptureSession : IBufferedVoiceCaptureSession
         }
     }
 
-    private void SignalCursorStateChange()
-    {
-        TaskCompletionSource pulse;
-        lock (_gate)
-        {
-            pulse = RotatePulse();
-        }
-
-        pulse.TrySetResult();
-    }
-
     private TaskCompletionSource RotatePulse()
     {
         var current = _pulse;
@@ -314,6 +303,7 @@ public sealed class BufferedVoiceCaptureSession : IBufferedVoiceCaptureSession
     private sealed class Cursor(BufferedVoiceCaptureSession owner, long startSampleOffset)
         : IVoiceAudioCursor
     {
+        private readonly TaskCompletionSource _disposeSignal = NewPulse();
         private int _disposed;
 
         public AudioFormat Format => owner.Format;
@@ -328,6 +318,11 @@ public sealed class BufferedVoiceCaptureSession : IBufferedVoiceCaptureSession
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var result = owner.Read(position);
+                if (Volatile.Read(ref _disposed) != 0)
+                {
+                    yield break;
+                }
+
                 if (result.Frame is not null)
                 {
                     position = result.Frame.EndSampleOffset;
@@ -345,7 +340,9 @@ public sealed class BufferedVoiceCaptureSession : IBufferedVoiceCaptureSession
                     yield break;
                 }
 
-                await result.Pulse!.WaitAsync(cancellationToken).ConfigureAwait(false);
+                await Task.WhenAny(result.Pulse!, _disposeSignal.Task)
+                    .WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
             }
         }
 
@@ -353,7 +350,7 @@ public sealed class BufferedVoiceCaptureSession : IBufferedVoiceCaptureSession
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
-                owner.SignalCursorStateChange();
+                _disposeSignal.TrySetResult();
             }
 
             return ValueTask.CompletedTask;

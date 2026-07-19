@@ -24,6 +24,8 @@ public sealed class AudioCaptureRegistrationTests
         services.Should().ContainSingle(descriptor =>
             descriptor.ServiceType == typeof(IWindowsCaptureClientFactory)
             && descriptor.ImplementationType == typeof(NAudioWindowsCaptureClientFactory));
+        services.Count(descriptor =>
+            descriptor.ServiceType == typeof(IWindowsCaptureClientFactory)).Should().Be(1);
         services.Should().Contain(descriptor =>
             descriptor.ServiceType == typeof(IAudioCaptureSessionFactory)
             && descriptor.ImplementationType == typeof(NAudioCaptureFactory)

@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using DeskPilot.Voice.Abstractions;
@@ -10,6 +11,8 @@ namespace DeskPilot.Voice.Tests;
 
 public sealed class BufferedVoiceCaptureSessionTests
 {
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(2);
+
     [Fact]
     public async Task SequentialCursors_ReadOneHardwarePumpAndPreserveHandoffFrames()
     {
@@ -160,7 +163,7 @@ public sealed class BufferedVoiceCaptureSessionTests
         var waitingRead = cancelledFrames.MoveNextAsync().AsTask();
 
         cancellation.Cancel();
-        await ((Func<Task>)(async () => await waitingRead)).Should()
+        await ((Func<Task>)(async () => await waitingRead.WaitAsync(TestTimeout))).Should()
             .ThrowAsync<OperationCanceledException>();
 
         raw.DisposeCount.Should().Be(0);
@@ -182,8 +185,42 @@ public sealed class BufferedVoiceCaptureSessionTests
 
         await cursor.DisposeAsync();
 
-        (await waitingRead).Should().BeFalse();
+        (await waitingRead.WaitAsync(TestTimeout)).Should().BeFalse();
         raw.DisposeCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CursorDisposal_DoesNotRotateOrCompleteTheSessionPulse()
+    {
+        await using var raw = TestCaptureSession.Create();
+        await using var session = new BufferedVoiceCaptureSession(raw);
+        var cursor = session.OpenCursor(0);
+        var pulseBeforeDispose = GetPrivateField<TaskCompletionSource>(session, "_pulse");
+
+        await cursor.DisposeAsync();
+
+        var pulseAfterDispose = GetPrivateField<TaskCompletionSource>(session, "_pulse");
+        ReferenceEquals(pulseAfterDispose, pulseBeforeDispose).Should().BeTrue();
+        pulseBeforeDispose.Task.IsCompleted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CursorDisposal_RepeatedAtLiveEdge_EndsWithoutNextAudio()
+    {
+        await using var raw = TestCaptureSession.Create();
+        await using var session = new BufferedVoiceCaptureSession(raw);
+
+        for (var index = 0; index < 100; index++)
+        {
+            var cursor = session.OpenCursor(session.LatestSampleOffset);
+            await using var frames = cursor.ReadFramesAsync(CancellationToken.None).GetAsyncEnumerator();
+            var waitingRead = frames.MoveNextAsync().AsTask();
+            await Task.Yield();
+
+            await cursor.DisposeAsync();
+
+            (await waitingRead.WaitAsync(TestTimeout)).Should().BeFalse();
+        }
     }
 
     [Fact]
@@ -197,10 +234,11 @@ public sealed class BufferedVoiceCaptureSessionTests
         var waitingRead = frames.MoveNextAsync().AsTask();
 
         await Task.WhenAll(
-            session.DisposeAsync().AsTask(),
-            session.DisposeAsync().AsTask());
+                session.DisposeAsync().AsTask(),
+                session.DisposeAsync().AsTask())
+            .WaitAsync(TestTimeout);
 
-        (await waitingRead).Should().BeFalse();
+        (await waitingRead.WaitAsync(TestTimeout)).Should().BeFalse();
         raw.DisposeCount.Should().Be(1);
         raw.ReadEnumerationCount.Should().Be(1);
         await raw.DisposeAsync();
@@ -211,7 +249,7 @@ public sealed class BufferedVoiceCaptureSessionTests
     {
         var raw = TestCaptureSession.Create();
         var session = new BufferedVoiceCaptureSession(raw);
-        await session.DisposeAsync();
+        await session.DisposeAsync().AsTask().WaitAsync(TestTimeout);
 
         var action = () => session.OpenCursor(0);
 
@@ -233,6 +271,39 @@ public sealed class BufferedVoiceCaptureSessionTests
         await WaitUntilAsync(() => session.NoiseSnapshot.FrameCount == 1);
 
         session.NoiseSnapshot.WindowDuration.Should().Be(TimeSpan.FromMilliseconds(20));
+    }
+
+    [Fact]
+    public async Task Pump_ReframesArbitraryEvenChunksIntoCompleteAmbientFramesAndRemainder()
+    {
+        await using var raw = TestCaptureSession.Create();
+        await using var session = new BufferedVoiceCaptureSession(raw);
+        var pcm16 = TestPcm.ConstantSamples(973, amplitude: 0.25);
+
+        await raw.EmitAsync(pcm16.AsSpan(0, 146).ToArray());
+        await raw.EmitAsync(pcm16.AsSpan(146, 1_000).ToArray());
+        await raw.EmitAsync(pcm16.AsSpan(1_146).ToArray());
+        await WaitUntilAsync(() => session.LatestSampleOffset == 973);
+
+        session.NoiseSnapshot.FrameCount.Should().Be(3);
+        session.NoiseSnapshot.WindowDuration.Should().Be(TimeSpan.FromMilliseconds(60));
+        session.NoiseSnapshot.NoiseFloorRms.Should().BeApproximately(0.25, 0.001);
+    }
+
+    [Fact]
+    public async Task DisposeAsync_ClearsPartialAmbientFrame()
+    {
+        var raw = TestCaptureSession.Create();
+        var session = new BufferedVoiceCaptureSession(raw);
+        await raw.EmitAsync(TestPcm.ConstantSamples(160, amplitude: 0.25));
+        await WaitUntilAsync(() => session.LatestSampleOffset == 160);
+        GetPrivateField<int>(session, "_ambientFrameBytes").Should().Be(320);
+        GetPrivateField<byte[]>(session, "_ambientFrame").Should().Contain(value => value != 0);
+
+        await session.DisposeAsync().AsTask().WaitAsync(TestTimeout);
+
+        GetPrivateField<int>(session, "_ambientFrameBytes").Should().Be(0);
+        GetPrivateField<byte[]>(session, "_ambientFrame").Should().OnlyContain(value => value == 0);
     }
 
     [Fact]
@@ -278,6 +349,33 @@ public sealed class BufferedVoiceCaptureSessionTests
         raw.DisposeCount.Should().Be(1);
     }
 
+    [Fact]
+    public async Task DisposeAsync_WhenPumpAndRawDisposeFail_PublishesOneRawDisposeFailureToAllCallers()
+    {
+        var pumpFailure = new AudioCaptureException(
+            AudioInputResultCode.Disconnected,
+            "Microphone disconnected.");
+        var disposeFailure = new InvalidOperationException("Raw disposal failed.");
+        var raw = TestCaptureSession.Create(disposeException: disposeFailure);
+        var session = new BufferedVoiceCaptureSession(raw);
+        await using var cursor = session.OpenCursor(0);
+        raw.Fail(pumpFailure);
+        var cursorAction = () => ReadFirstAsync(cursor.ReadFramesAsync(CancellationToken.None));
+        (await cursorAction.Should().ThrowAsync<AudioCaptureException>()).Which
+            .Should().BeSameAs(pumpFailure);
+
+        var firstDispose = session.DisposeAsync().AsTask();
+        var secondDispose = session.DisposeAsync().AsTask();
+        var firstAction = async () => await firstDispose.WaitAsync(TestTimeout);
+        var secondAction = async () => await secondDispose.WaitAsync(TestTimeout);
+
+        (await firstAction.Should().ThrowAsync<InvalidOperationException>()).Which
+            .Should().BeSameAs(disposeFailure);
+        (await secondAction.Should().ThrowAsync<InvalidOperationException>()).Which
+            .Should().BeSameAs(disposeFailure);
+        raw.DisposeCount.Should().Be(1);
+    }
+
     private static async Task AssertTailThenFailureAsync(
         IVoiceAudioCursor cursor,
         AudioCaptureException failure)
@@ -293,7 +391,8 @@ public sealed class BufferedVoiceCaptureSessionTests
     private static async Task<SequencedAudioFrame> ReadFirstAsync(
         IAsyncEnumerable<SequencedAudioFrame> frames)
     {
-        await foreach (var frame in frames)
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await foreach (var frame in frames.WithCancellation(timeout.Token))
         {
             return frame;
         }
@@ -304,8 +403,9 @@ public sealed class BufferedVoiceCaptureSessionTests
     private static async Task<IReadOnlyList<SequencedAudioFrame>> ReadAllAsync(
         IAsyncEnumerable<SequencedAudioFrame> frames)
     {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         var result = new List<SequencedAudioFrame>();
-        await foreach (var frame in frames)
+        await foreach (var frame in frames.WithCancellation(timeout.Token))
         {
             result.Add(frame);
         }
@@ -322,6 +422,13 @@ public sealed class BufferedVoiceCaptureSessionTests
         }
     }
 
+    private static T GetPrivateField<T>(object instance, string name)
+    {
+        var field = instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull();
+        return (T)field!.GetValue(instance)!;
+    }
+
     private static class TestPcm
     {
         internal static byte[] Samples(int startValue, int sampleCount)
@@ -336,6 +443,20 @@ public sealed class BufferedVoiceCaptureSessionTests
 
             return pcm16;
         }
+
+        internal static byte[] ConstantSamples(int sampleCount, double amplitude)
+        {
+            var sample = (short)Math.Round(short.MaxValue * amplitude);
+            var pcm16 = new byte[sampleCount * sizeof(short)];
+            for (var offset = 0; offset < pcm16.Length; offset += sizeof(short))
+            {
+                BinaryPrimitives.WriteInt16LittleEndian(
+                    pcm16.AsSpan(offset, sizeof(short)),
+                    sample);
+            }
+
+            return pcm16;
+        }
     }
 
     private sealed class TestCaptureSession : IAudioCaptureSession
@@ -344,9 +465,12 @@ public sealed class BufferedVoiceCaptureSessionTests
         private int _disposeCount;
         private int _readEnumerationCount;
 
-        private TestCaptureSession(AudioFormat format)
+        private readonly Exception? _disposeException;
+
+        private TestCaptureSession(AudioFormat format, Exception? disposeException)
         {
             Format = format;
+            _disposeException = disposeException;
         }
 
         public string EndpointId => "microphone";
@@ -357,8 +481,10 @@ public sealed class BufferedVoiceCaptureSessionTests
 
         public int ReadEnumerationCount => Volatile.Read(ref _readEnumerationCount);
 
-        internal static TestCaptureSession Create(AudioFormat? format = null) =>
-            new(format ?? AudioFormat.Pcm16KhzMono);
+        internal static TestCaptureSession Create(
+            AudioFormat? format = null,
+            Exception? disposeException = null) =>
+            new(format ?? AudioFormat.Pcm16KhzMono, disposeException);
 
         public async IAsyncEnumerable<AudioFrame> ReadFramesAsync(
             [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -374,7 +500,9 @@ public sealed class BufferedVoiceCaptureSessionTests
         {
             Interlocked.Increment(ref _disposeCount);
             _frames.Writer.TryComplete();
-            return ValueTask.CompletedTask;
+            return _disposeException is null
+                ? ValueTask.CompletedTask
+                : ValueTask.FromException(_disposeException);
         }
 
         internal ValueTask EmitAsync(byte[] pcm16) => _frames.Writer.WriteAsync(
