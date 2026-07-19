@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Buffers.Binary;
 using DeskPilot.Voice.Abstractions;
 
 namespace DeskPilot.Voice.AudioCapture;
@@ -147,7 +146,7 @@ public sealed class EnergyVoiceActivityDetector : IVoiceActivityDetector
 
         var boundedFrame = frame[..(availableSamples * BytesPerSample)];
         totalSamples += availableSamples;
-        var isSpeech = CalculateRms(boundedFrame) >= rmsThreshold;
+        var isSpeech = PcmRms.Calculate(boundedFrame) >= rmsThreshold;
         if (speechStarted || isSpeech)
         {
             boundedFrame.CopyTo(commandBuffer.AsSpan(commandLength));
@@ -167,20 +166,6 @@ public sealed class EnergyVoiceActivityDetector : IVoiceActivityDetector
 
         return totalSamples >= maximumSamples
             || (speechStarted && trailingSilenceSamples >= silenceSamples);
-    }
-
-    private static double CalculateRms(ReadOnlySpan<byte> pcm16)
-    {
-        var sampleCount = pcm16.Length / BytesPerSample;
-        double sumOfSquares = 0;
-        for (var offset = 0; offset < pcm16.Length; offset += BytesPerSample)
-        {
-            var sample = BinaryPrimitives.ReadInt16LittleEndian(
-                pcm16.Slice(offset, BytesPerSample)) / 32_768d;
-            sumOfSquares += sample * sample;
-        }
-
-        return sampleCount == 0 ? 0 : Math.Sqrt(sumOfSquares / sampleCount);
     }
 
     private static double MapThreshold(double sensitivity)
