@@ -1,4 +1,5 @@
 using DeskPilot.Application.Voice;
+using DeskPilot.Core.Commands;
 using DeskPilot.Core.Voice;
 using DeskPilot.Voice.Abstractions;
 using FluentAssertions;
@@ -10,7 +11,7 @@ namespace DeskPilot.Application.Tests;
 public sealed class VoicePipelineCoordinatorTests
 {
     [Fact]
-    public async Task RunSingleCycleAsync_PublishesTextWithoutDispatchingACommand()
+    public async Task RunSingleCycleAsync_ResolvesDispatchesAndSignalsSuccess()
     {
         var fixture = PipelineFixture.Create();
         var history = new List<VoiceAssistantState>();
@@ -27,10 +28,85 @@ public sealed class VoicePipelineCoordinatorTests
             VoiceAssistantState.ListeningForCommand,
             VoiceAssistantState.DetectingSpeechEnd,
             VoiceAssistantState.RecognizingCommand,
+            VoiceAssistantState.ResolvingCommand,
+            VoiceAssistantState.ExecutingCommand,
             VoiceAssistantState.Cooldown,
             VoiceAssistantState.WaitingForWakeWord);
+        fixture.State.Snapshot.LastResolvedCommandId.Should().Be("audio.change-volume");
+        fixture.State.Snapshot.LastIntentStatus.Should().Be(IntentResolutionStatus.Resolved);
+        fixture.State.Snapshot.LastIntentConfidence.Should().Be(1);
+        fixture.State.Snapshot.LastExecutionStatus.Should().Be(CommandExecutionStatus.Succeeded);
+        await fixture.Signals.Received().PlayAsync(VoiceSignal.Success, Arg.Any<CancellationToken>());
         fixture.WakeCapture.DisposeCount.Should().Be(1);
         fixture.CommandCapture.DisposeCount.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(IntentResolutionStatus.NotFound, "voice-command-not-found")]
+    [InlineData(IntentResolutionStatus.Ambiguous, "voice-command-ambiguous")]
+    public async Task RunSingleCycleAsync_UnresolvedCommandSignalsFailure(
+        IntentResolutionStatus status,
+        string expectedCode)
+    {
+        var fixture = PipelineFixture.Create();
+        var history = new List<VoiceAssistantState>();
+        fixture.State.SnapshotChanged += (_, snapshot) => history.Add(snapshot.State);
+        fixture.Commands.ExecuteAsync(
+                Arg.Any<string>(),
+                Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new VoiceCommandExecutionResult(
+                new IntentResolutionResult(status, null, 0),
+                null));
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.WaitingForWakeWord);
+        fixture.State.Snapshot.LastIntentStatus.Should().Be(status);
+        fixture.State.Snapshot.LastExecutionStatus.Should().BeNull();
+        fixture.State.Snapshot.ErrorCode.Should().Be(expectedCode);
+        history.Should().Contain(VoiceAssistantState.ResolvingCommand);
+        history.Should().NotContain(VoiceAssistantState.ExecutingCommand);
+        await fixture.Signals.Received().PlayAsync(VoiceSignal.Failure, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_FailedHandlerPublishesSafeCodeAndRecovers()
+    {
+        var fixture = PipelineFixture.Create();
+        var request = new CommandRequest(CommandId.From("audio.switch-preferred-device"));
+        fixture.Commands.ExecuteAsync(
+                Arg.Any<string>(),
+                Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                call.Arg<Action<VoiceCommandExecutionProgress>>()(
+                    new VoiceCommandExecutionProgress(
+                        request.CommandId,
+                        IntentResolutionStatus.Resolved,
+                        0.93));
+                return new VoiceCommandExecutionResult(
+                    new IntentResolutionResult(
+                        IntentResolutionStatus.Resolved,
+                        request,
+                        0.93),
+                    new CommandExecutionResult(
+                        request.CommandId,
+                        CommandExecutionStatus.Failed,
+                        "Private endpoint bt-personal failed.")
+                    {
+                        ErrorCode = "audio-endpoint-unavailable",
+                    });
+            });
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.WaitingForWakeWord);
+        fixture.State.Snapshot.LastExecutionStatus.Should().Be(CommandExecutionStatus.Failed);
+        fixture.State.Snapshot.ErrorCode.Should().Be("audio-endpoint-unavailable");
+        fixture.State.Snapshot.SafeMessage.Should().NotContain("bt-personal");
+        await fixture.Signals.Received().PlayAsync(VoiceSignal.Failure, Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -396,6 +472,8 @@ public sealed class VoicePipelineCoordinatorTests
 
         public required IVoiceSignalService Signals { get; init; }
 
+        public required IVoiceCommandExecutionService Commands { get; init; }
+
         public required TestCaptureSession WakeCapture { get; init; }
 
         public required TestCaptureSession CommandCapture { get; init; }
@@ -476,6 +554,26 @@ public sealed class VoicePipelineCoordinatorTests
                     Arg.Any<CancellationToken>())
                 .Returns(new VoiceActivityResult(true, TimeSpan.FromSeconds(1), audio));
             var signals = Substitute.For<IVoiceSignalService>();
+            var commands = Substitute.For<IVoiceCommandExecutionService>();
+            commands.ExecuteAsync(
+                    Arg.Any<string>(),
+                    Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(call =>
+                {
+                    var request = new CommandRequest(CommandId.From("audio.change-volume"));
+                    call.Arg<Action<VoiceCommandExecutionProgress>>()(
+                        new VoiceCommandExecutionProgress(
+                            request.CommandId,
+                            IntentResolutionStatus.Resolved,
+                            1));
+                    return new VoiceCommandExecutionResult(
+                        new IntentResolutionResult(
+                            IntentResolutionStatus.Resolved,
+                            request,
+                            1),
+                        CommandExecutionResult.Succeeded(request.CommandId));
+                });
             var state = new VoicePipelineStateStore();
             var coordinator = new VoicePipelineCoordinator(
                 settings,
@@ -485,6 +583,7 @@ public sealed class VoicePipelineCoordinatorTests
                 captures,
                 vad,
                 signals,
+                commands,
                 state,
                 TimeProvider.System);
 
@@ -501,6 +600,7 @@ public sealed class VoicePipelineCoordinatorTests
                 Speech = speech,
                 VoiceActivity = vad,
                 Signals = signals,
+                Commands = commands,
                 WakeCapture = wakeCapture,
                 CommandCapture = commandCapture,
             };

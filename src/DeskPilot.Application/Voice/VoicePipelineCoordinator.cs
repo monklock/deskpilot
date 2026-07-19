@@ -1,3 +1,4 @@
+using DeskPilot.Core.Commands;
 using DeskPilot.Core.Voice;
 using DeskPilot.Voice.Abstractions;
 using Microsoft.Extensions.Logging;
@@ -40,6 +41,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
     private readonly IAudioCaptureSessionFactory _captures;
     private readonly IVoiceActivityDetector _voiceActivity;
     private readonly IVoiceSignalService _signals;
+    private readonly IVoiceCommandExecutionService _commands;
     private readonly VoicePipelineStateStore _state;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<VoicePipelineCoordinator> _logger;
@@ -57,6 +59,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         IAudioCaptureSessionFactory captures,
         IVoiceActivityDetector voiceActivity,
         IVoiceSignalService signals,
+        IVoiceCommandExecutionService commands,
         VoicePipelineStateStore state,
         TimeProvider timeProvider,
         ILogger<VoicePipelineCoordinator>? logger = null)
@@ -68,6 +71,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         _captures = captures ?? throw new ArgumentNullException(nameof(captures));
         _voiceActivity = voiceActivity ?? throw new ArgumentNullException(nameof(voiceActivity));
         _signals = signals ?? throw new ArgumentNullException(nameof(signals));
+        _commands = commands ?? throw new ArgumentNullException(nameof(commands));
         _state = state ?? throw new ArgumentNullException(nameof(state));
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _logger = logger ?? NullLogger<VoicePipelineCoordinator>.Instance;
@@ -129,7 +133,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         await EnableAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Runs exactly one wake-to-text cycle without resolving or dispatching a command.</summary>
+    /// <summary>Runs exactly one wake-to-command cycle.</summary>
     public async Task RunSingleCycleAsync(CancellationToken cancellationToken)
     {
         await _pipelineGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -290,6 +294,10 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             MicrophoneEndpointId = resolution.Device.EndpointId,
             ErrorCode = null,
             SafeMessage = null,
+            LastResolvedCommandId = null,
+            LastIntentStatus = null,
+            LastIntentConfidence = null,
+            LastExecutionStatus = null,
             ActiveWakeModelVersion = wakeModel.Version,
             ActiveCommandModelVersion = commandModel.Version,
         };
@@ -349,12 +357,36 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             .ConfigureAwait(false);
         Publish(_state.Snapshot with
         {
+            State = VoiceAssistantState.ResolvingCommand,
             LastRecognizedText = recognition.Text,
             LastRecognitionConfidence = recognition.Confidence,
             ErrorCode = null,
             SafeMessage = null,
         });
-        await PlaySignalSafelyAsync(VoiceSignal.Success, cancellationToken).ConfigureAwait(false);
+        var commandResult = await _commands.ExecuteAsync(
+            recognition.Text,
+            progress => Publish(_state.Snapshot with
+            {
+                State = VoiceAssistantState.ExecutingCommand,
+                LastResolvedCommandId = progress.CommandId.Value,
+                LastIntentStatus = progress.IntentStatus,
+                LastIntentConfidence = progress.Confidence,
+                LastExecutionStatus = null,
+                ErrorCode = null,
+                SafeMessage = null,
+            }),
+            cancellationToken).ConfigureAwait(false);
+        var outcome = ToCommandOutcome(commandResult);
+        Publish(_state.Snapshot with
+        {
+            LastResolvedCommandId = commandResult.Resolution.Request?.CommandId.Value,
+            LastIntentStatus = commandResult.Resolution.Status,
+            LastIntentConfidence = commandResult.Resolution.Confidence,
+            LastExecutionStatus = commandResult.Execution?.Status,
+            ErrorCode = outcome.ErrorCode,
+            SafeMessage = outcome.SafeMessage,
+        });
+        await PlaySignalSafelyAsync(outcome.Signal, cancellationToken).ConfigureAwait(false);
         activity = activity with { Audio = null };
         await PublishCooldownAsync(settings.Cooldown, cancellationToken).ConfigureAwait(false);
     }
@@ -463,12 +495,57 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         _ => "Локальное распознавание не выполнено. Повторите команду.",
     };
 
+    private static CommandOutcome ToCommandOutcome(VoiceCommandExecutionResult result)
+    {
+        if (result.Resolution.Status == IntentResolutionStatus.NotFound)
+        {
+            return new CommandOutcome(
+                VoiceSignal.Failure,
+                "voice-command-not-found",
+                "Команда не найдена. Повторите команду.");
+        }
+
+        if (result.Resolution.Status == IntentResolutionStatus.Ambiguous)
+        {
+            return new CommandOutcome(
+                VoiceSignal.Failure,
+                "voice-command-ambiguous",
+                "Команда распознана неоднозначно. Сформулируйте её точнее.");
+        }
+
+        return result.Execution?.Status switch
+        {
+            CommandExecutionStatus.Succeeded => new CommandOutcome(
+                VoiceSignal.Success,
+                null,
+                "Команда выполнена."),
+            CommandExecutionStatus.NotFound => new CommandOutcome(
+                VoiceSignal.Failure,
+                result.Execution.ErrorCode ?? "command-not-found",
+                "Команда временно недоступна."),
+            CommandExecutionStatus.Rejected => new CommandOutcome(
+                VoiceSignal.Failure,
+                result.Execution.ErrorCode ?? "voice-command-rejected",
+                "Команда отклонена текущим состоянием системы."),
+            CommandExecutionStatus.Failed => new CommandOutcome(
+                VoiceSignal.Failure,
+                result.Execution.ErrorCode ?? "voice-command-failed",
+                "Не удалось выполнить команду."),
+            _ => new CommandOutcome(
+                VoiceSignal.Failure,
+                "voice-command-failed",
+                "Не удалось выполнить команду."),
+        };
+    }
+
     private sealed class VoicePipelineResourceException(string code, string safeMessage) : Exception
     {
         public string Code { get; } = code;
 
         public string SafeMessage { get; } = safeMessage;
     }
+
+    private sealed record CommandOutcome(VoiceSignal Signal, string? ErrorCode, string SafeMessage);
 
     private sealed class IdleLease(VoicePipelineCoordinator owner, bool shouldResume) : IAsyncDisposable
     {

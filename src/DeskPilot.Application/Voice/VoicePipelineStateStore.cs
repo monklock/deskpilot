@@ -1,3 +1,4 @@
+using DeskPilot.Core.Commands;
 using DeskPilot.Core.Voice;
 
 namespace DeskPilot.Application.Voice;
@@ -18,6 +19,18 @@ public sealed record VoicePipelineSnapshot(
 
     /// <summary>Gets the active command model version.</summary>
     public string? ActiveCommandModelVersion { get; init; }
+
+    /// <summary>Gets the last resolved trusted command identifier.</summary>
+    public string? LastResolvedCommandId { get; init; }
+
+    /// <summary>Gets the last intent resolution status.</summary>
+    public IntentResolutionStatus? LastIntentStatus { get; init; }
+
+    /// <summary>Gets the last intent confidence.</summary>
+    public double? LastIntentConfidence { get; init; }
+
+    /// <summary>Gets the last command execution status.</summary>
+    public CommandExecutionStatus? LastExecutionStatus { get; init; }
 
     /// <summary>Gets the initial disabled snapshot.</summary>
     public static VoicePipelineSnapshot Disabled { get; } = new(
