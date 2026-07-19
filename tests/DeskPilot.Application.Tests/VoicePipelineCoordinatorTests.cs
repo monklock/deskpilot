@@ -268,6 +268,64 @@ public sealed class VoicePipelineCoordinatorTests
     }
 
     [Fact]
+    public async Task RunSingleCycleAsync_LowConfidence_PublishesTextWithoutExecutingCommand()
+    {
+        var fixture = PipelineFixture.Create();
+        fixture.Speech.RecognizeAsync(
+                Arg.Any<CapturedCommandAudio>(),
+                Arg.Any<SpeechRecognitionOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns<SpeechRecognitionResult>(_ => throw new SpeechRecognitionException(
+                SpeechRecognitionFailureCode.ConfidenceBelowThreshold,
+                "safe failure")
+            {
+                RecognizedText = "сделай тише",
+                RecognitionConfidence = 0.42,
+            });
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Error);
+        fixture.State.Snapshot.ErrorCode.Should().Be("speech-confidence-low");
+        fixture.State.Snapshot.LastRecognizedText.Should().Be("сделай тише");
+        fixture.State.Snapshot.LastRecognitionConfidence.Should().Be(0.42);
+        await fixture.Commands.DidNotReceive().ExecuteAsync(
+            Arg.Any<string>(),
+            Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+            Arg.Any<CancellationToken>());
+        await fixture.Signals.Received().PlayAsync(
+            VoiceSignal.Failure,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RunSingleCycleAsync_NoSpeech_PublishesNotRecognizedWithoutCallingWhisper()
+    {
+        var fixture = PipelineFixture.Create();
+        fixture.VoiceActivity.CaptureAsync(
+                Arg.Any<IAudioCaptureSession>(),
+                Arg.Any<VoiceActivityOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new VoiceActivityResult(false, TimeSpan.Zero, null));
+
+        await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
+
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.WaitingForWakeWord);
+        fixture.State.Snapshot.ErrorCode.Should().Be("speech-not-detected");
+        fixture.State.Snapshot.SafeMessage.Should().Be("Команда не распознана");
+        fixture.State.Snapshot.LastRecognizedText.Should().BeNull();
+        fixture.State.Snapshot.LastRecognitionConfidence.Should().BeNull();
+        await fixture.Speech.DidNotReceive().RecognizeAsync(
+            Arg.Any<CapturedCommandAudio>(),
+            Arg.Any<SpeechRecognitionOptions>(),
+            Arg.Any<CancellationToken>());
+        await fixture.Commands.DidNotReceive().ExecuteAsync(
+            Arg.Any<string>(),
+            Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task ExplicitBluetoothMicrophoneReconnect_ResumesSameEndpoint()
     {
         var fixture = PipelineFixture.Create(blockWakeUntilCancellation: true);

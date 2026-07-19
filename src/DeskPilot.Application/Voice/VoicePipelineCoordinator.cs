@@ -157,7 +157,18 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             {
                 _logger.LogWarning("Voice recognition failure {FailureCode}.", exception.Code);
                 await PlaySignalSafelyAsync(VoiceSignal.Failure, cancellationToken).ConfigureAwait(false);
-                PublishError(ToSpeechErrorCode(exception.Code), ToSpeechSafeMessage(exception.Code));
+                Publish(_state.Snapshot with
+                {
+                    State = VoiceAssistantState.Error,
+                    LastRecognizedText = exception.RecognizedText,
+                    LastRecognitionConfidence = exception.RecognitionConfidence,
+                    LastResolvedCommandId = null,
+                    LastIntentStatus = null,
+                    LastIntentConfidence = null,
+                    LastExecutionStatus = null,
+                    ErrorCode = ToSpeechErrorCode(exception.Code),
+                    SafeMessage = ToSpeechSafeMessage(exception.Code),
+                });
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -343,6 +354,17 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
 
         if (!activity.SpeechDetected || activity.Audio is null)
         {
+            Publish(_state.Snapshot with
+            {
+                LastRecognizedText = null,
+                LastRecognitionConfidence = null,
+                LastResolvedCommandId = null,
+                LastIntentStatus = null,
+                LastIntentConfidence = null,
+                LastExecutionStatus = null,
+                ErrorCode = "speech-not-detected",
+                SafeMessage = "Команда не распознана",
+            });
             await PlaySignalSafelyAsync(VoiceSignal.Failure, cancellationToken).ConfigureAwait(false);
             await PublishCooldownAsync(settings.Cooldown, cancellationToken).ConfigureAwait(false);
             return;
