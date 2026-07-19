@@ -1,4 +1,5 @@
 using System.Media;
+using System.Diagnostics;
 using DeskPilot.Desktop.Services;
 using DeskPilot.Voice.Abstractions;
 using FluentAssertions;
@@ -55,12 +56,16 @@ public sealed class LocalVoiceSignalServiceTests
     {
         var player = new BlockingTonePlayer();
         var service = new LocalVoiceSignalService(player);
+        var callerThreadId = Environment.CurrentManagedThreadId;
+        var stopwatch = Stopwatch.StartNew();
 
         var playback = service.PlayAsync(signal, CancellationToken.None);
         await player.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         playback.IsCompleted.Should().BeFalse();
+        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1));
         player.Signal.Should().Be(signal);
+        player.PlayThreadId.Should().NotBe(callerThreadId);
         player.Release.TrySetResult();
         await playback;
     }
@@ -85,10 +90,13 @@ public sealed class LocalVoiceSignalServiceTests
 
         public int CallCount { get; private set; }
 
+        public int? PlayThreadId { get; private set; }
+
         public void Play(VoiceSignal signal)
         {
             CallCount++;
             Signal = signal;
+            PlayThreadId = Environment.CurrentManagedThreadId;
             Started.TrySetResult();
             Release.Task.GetAwaiter().GetResult();
         }
