@@ -90,7 +90,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
 
             _runCancellation?.Dispose();
             _runCancellation = new CancellationTokenSource();
-            _runTask = RunLoopAsync(_runCancellation.Token);
+            _runTask = StartRunLoop(_runCancellation.Token);
         }
         finally
         {
@@ -443,7 +443,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             if (shouldResume)
             {
                 _runCancellation = new CancellationTokenSource();
-                _runTask = RunLoopAsync(_runCancellation.Token);
+                _runTask = StartRunLoop(_runCancellation.Token);
             }
         }
         finally
@@ -454,6 +454,9 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
 
         return ValueTask.CompletedTask;
     }
+
+    private Task StartRunLoop(CancellationToken cancellationToken) =>
+        Task.Run(() => RunLoopAsync(cancellationToken), CancellationToken.None);
 
     private async Task PlaySignalSafelyAsync(VoiceSignal signal, CancellationToken cancellationToken)
     {

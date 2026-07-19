@@ -195,6 +195,45 @@ public sealed class VoicePipelineCoordinatorTests
     }
 
     [Fact]
+    public async Task EnableAsync_ReturnsBeforeSynchronouslyBlockingProviderLoop()
+    {
+        var fixture = PipelineFixture.Create();
+        var providerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var neverCompletes = new TaskCompletionSource<WakeWordDetectionResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseProvider = new ManualResetEventSlim(false);
+        fixture.Wake.WaitForDetectionAsync(
+                Arg.Any<IAudioCaptureSession>(),
+                Arg.Any<WakeWordOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                providerEntered.TrySetResult();
+                releaseProvider.Wait(TimeSpan.FromSeconds(5));
+                return neverCompletes.Task.WaitAsync(call.ArgAt<CancellationToken>(2));
+            });
+
+        var enableTask = Task.Run(() => fixture.Coordinator.EnableAsync(CancellationToken.None));
+        await providerEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var enableReturnedBeforeRelease = true;
+        try
+        {
+            await enableTask.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        catch (TimeoutException)
+        {
+            enableReturnedBeforeRelease = false;
+        }
+
+        releaseProvider.Set();
+        await enableTask.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        enableReturnedBeforeRelease.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task EnableAsync_WhileDisableIsStopping_WaitsForPreviousRunOwnership()
     {
         var fixture = PipelineFixture.Create();
