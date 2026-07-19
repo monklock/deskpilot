@@ -12,6 +12,8 @@ public sealed class VoskWakeWordProvider(
 {
     private const int SamplesPerSecond = 16_000;
     private const string InvalidWakeTimingMessage = "Vosk returned invalid wake-word timing.";
+    private const string InvalidAudioFrameMessage =
+        "Vosk requires contiguous mono 16 kHz PCM16 frames.";
     private static readonly JsonSerializerOptions GrammarJsonOptions = new()
     {
         Encoder = JavaScriptEncoder.Create(UnicodeRanges.BasicLatin, UnicodeRanges.Cyrillic),
@@ -35,7 +37,7 @@ public sealed class VoskWakeWordProvider(
         var phrase = ValidateInput(audio.Format, options, cancellationToken);
         if (audio.StartSampleOffset < 0)
         {
-            throw new InvalidDataException(InvalidWakeTimingMessage);
+            throw UnsupportedAudioFrame();
         }
 
         var grammarJson = JsonSerializer.Serialize(new[] { phrase }, GrammarJsonOptions);
@@ -110,7 +112,7 @@ public sealed class VoskWakeWordProvider(
     {
         if (frame.Pcm16.IsEmpty || frame.Pcm16.Length % sizeof(short) != 0)
         {
-            throw new InvalidDataException(InvalidWakeTimingMessage);
+            throw UnsupportedAudioFrame();
         }
 
         long expectedEndSampleOffset;
@@ -121,7 +123,7 @@ public sealed class VoskWakeWordProvider(
         }
         catch (OverflowException exception)
         {
-            throw new InvalidDataException(InvalidWakeTimingMessage, exception);
+            throw UnsupportedAudioFrame(exception);
         }
 
         var expectedDuration = TimeSpan.FromTicks(
@@ -131,7 +133,7 @@ public sealed class VoskWakeWordProvider(
             || frame.EndSampleOffset != expectedEndSampleOffset
             || frame.Duration != expectedDuration)
         {
-            throw new InvalidDataException(InvalidWakeTimingMessage);
+            throw UnsupportedAudioFrame();
         }
     }
 
@@ -156,7 +158,7 @@ public sealed class VoskWakeWordProvider(
         if (!double.IsFinite(recognition.Confidence)
             || recognition.Confidence is < 0 or > 1)
         {
-            throw new InvalidDataException(InvalidWakeTimingMessage);
+            throw InvalidWakeTiming();
         }
 
         if (recognition.Confidence < minimumConfidence)
@@ -171,7 +173,7 @@ public sealed class VoskWakeWordProvider(
                 phrase,
                 StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException(InvalidWakeTimingMessage);
+            throw InvalidWakeTiming();
         }
 
         var word = recognition.Words[0];
@@ -181,7 +183,7 @@ public sealed class VoskWakeWordProvider(
             || word.Start < TimeSpan.Zero
             || word.End <= word.Start)
         {
-            throw new InvalidDataException(InvalidWakeTimingMessage);
+            throw InvalidWakeTiming();
         }
 
         try
@@ -201,7 +203,7 @@ public sealed class VoskWakeWordProvider(
                 || wakeEnd <= wakeStart
                 || wakeEnd > detectionSampleOffset)
             {
-                throw new InvalidDataException(InvalidWakeTimingMessage);
+                throw InvalidWakeTiming();
             }
 
             detection = new WakeWordDetectionResult(
@@ -214,11 +216,23 @@ public sealed class VoskWakeWordProvider(
         }
         catch (OverflowException exception)
         {
-            throw new InvalidDataException(InvalidWakeTimingMessage, exception);
+            throw InvalidWakeTiming(exception);
         }
         catch (ArgumentOutOfRangeException exception)
         {
-            throw new InvalidDataException(InvalidWakeTimingMessage, exception);
+            throw InvalidWakeTiming(exception);
         }
     }
+
+    private static WakeWordDetectionException InvalidWakeTiming(Exception? innerException = null) =>
+        new(
+            WakeWordDetectionFailureCode.InvalidTiming,
+            InvalidWakeTimingMessage,
+            innerException);
+
+    private static AudioCaptureException UnsupportedAudioFrame(Exception? innerException = null) =>
+        new(
+            AudioInputResultCode.UnsupportedFormat,
+            InvalidAudioFrameMessage,
+            innerException);
 }

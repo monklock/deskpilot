@@ -160,10 +160,77 @@ public sealed record VoiceActivityResult(
     CapturedCommandAudio? Audio,
     VoiceActivityDiagnostics Diagnostics);
 
+/// <summary>Identifies a safe wake-word detection failure.</summary>
+public enum WakeWordDetectionFailureCode
+{
+    /// <summary>The provider returned missing or incoherent wake-word timing.</summary>
+    InvalidTiming,
+}
+
+/// <summary>Represents a typed safe wake-word detection failure.</summary>
+public sealed class WakeWordDetectionException : Exception
+{
+    /// <summary>Creates a typed wake-word detection failure.</summary>
+    public WakeWordDetectionException(
+        WakeWordDetectionFailureCode code,
+        string message,
+        Exception? innerException = null)
+        : base(message, innerException)
+    {
+        Code = code;
+    }
+
+    /// <summary>Gets the safe failure code.</summary>
+    public WakeWordDetectionFailureCode Code { get; }
+}
+
 /// <summary>Contains a wake phrase detection result.</summary>
-public sealed record WakeWordDetectionResult(
-    string Phrase,
-    double Confidence,
-    long WakeStartSampleOffset,
-    long WakeEndSampleOffset,
-    long DetectionSampleOffset);
+public sealed record WakeWordDetectionResult
+{
+    /// <summary>Creates an immutable detection with monotonic absolute offsets.</summary>
+    public WakeWordDetectionResult(
+        string phrase,
+        double confidence,
+        long wakeStartSampleOffset,
+        long wakeEndSampleOffset,
+        long detectionSampleOffset)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(wakeStartSampleOffset);
+        ArgumentOutOfRangeException.ThrowIfNegative(wakeEndSampleOffset);
+        ArgumentOutOfRangeException.ThrowIfNegative(detectionSampleOffset);
+        if (wakeEndSampleOffset < wakeStartSampleOffset)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(wakeEndSampleOffset),
+                "Wake end sample offset must not precede wake start.");
+        }
+
+        if (detectionSampleOffset < wakeEndSampleOffset)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(detectionSampleOffset),
+                "Detection sample offset must not precede wake end.");
+        }
+
+        Phrase = phrase;
+        Confidence = confidence;
+        WakeStartSampleOffset = wakeStartSampleOffset;
+        WakeEndSampleOffset = wakeEndSampleOffset;
+        DetectionSampleOffset = detectionSampleOffset;
+    }
+
+    /// <summary>Gets the detected phrase.</summary>
+    public string Phrase { get; }
+
+    /// <summary>Gets the provider confidence.</summary>
+    public double Confidence { get; }
+
+    /// <summary>Gets the absolute wake-word start sample offset.</summary>
+    public long WakeStartSampleOffset { get; }
+
+    /// <summary>Gets the absolute wake-word end sample offset.</summary>
+    public long WakeEndSampleOffset { get; }
+
+    /// <summary>Gets the absolute sample offset consumed when detection completed.</summary>
+    public long DetectionSampleOffset { get; }
+}

@@ -46,7 +46,7 @@ public sealed class VoskWakeWordProviderTests
     }
 
     [Fact]
-    public async Task WaitForDetectionAsync_Cursor_WakeEndBeyondDetection_ThrowsInvalidDataException()
+    public async Task WaitForDetectionAsync_Cursor_WakeEndBeyondDetection_ThrowsTypedTimingFailure()
     {
         var provider = new VoskWakeWordProvider(
             "wake-model",
@@ -61,8 +61,8 @@ public sealed class VoskWakeWordProviderTests
             new WakeWordOptions("альфа", 0.80),
             CancellationToken.None);
 
-        await action.Should().ThrowAsync<InvalidDataException>()
-            .WithMessage("Vosk returned invalid wake-word timing.*");
+        await action.Should().ThrowAsync<WakeWordDetectionException>()
+            .Where(exception => exception.Code == WakeWordDetectionFailureCode.InvalidTiming);
         audio.DisposeCount.Should().Be(0);
     }
 
@@ -91,8 +91,8 @@ public sealed class VoskWakeWordProviderTests
             new WakeWordOptions("альфа", 0.80),
             CancellationToken.None);
 
-        await action.Should().ThrowAsync<InvalidDataException>()
-            .WithMessage("Vosk returned invalid wake-word timing.*");
+        await action.Should().ThrowAsync<AudioCaptureException>()
+            .Where(exception => exception.Code == AudioInputResultCode.UnsupportedFormat);
         recognizer.AcceptCount.Should().Be(1);
         recognizer.DisposeCount.Should().Be(1);
         audio.DisposeCount.Should().Be(0);
@@ -137,8 +137,8 @@ public sealed class VoskWakeWordProviderTests
             new WakeWordOptions("альфа", 0.80),
             CancellationToken.None);
 
-        await action.Should().ThrowAsync<InvalidDataException>()
-            .WithMessage("Vosk returned invalid wake-word timing.*");
+        await action.Should().ThrowAsync<WakeWordDetectionException>()
+            .Where(exception => exception.Code == WakeWordDetectionFailureCode.InvalidTiming);
     }
 
     [Fact]
@@ -167,7 +167,7 @@ public sealed class VoskWakeWordProviderTests
     }
 
     [Fact]
-    public async Task WaitForDetectionAsync_Cursor_AbsoluteOffsetOverflow_ThrowsInvalidDataException()
+    public async Task WaitForDetectionAsync_Cursor_AbsoluteOffsetOverflow_ThrowsTypedTimingFailure()
     {
         var provider = new VoskWakeWordProvider(
             "wake-model",
@@ -182,8 +182,8 @@ public sealed class VoskWakeWordProviderTests
             new WakeWordOptions("альфа", 0.80),
             CancellationToken.None);
 
-        await action.Should().ThrowAsync<InvalidDataException>()
-            .WithMessage("Vosk returned invalid wake-word timing.*");
+        await action.Should().ThrowAsync<WakeWordDetectionException>()
+            .Where(exception => exception.Code == WakeWordDetectionFailureCode.InvalidTiming);
     }
 
     [Fact]
@@ -476,7 +476,8 @@ public sealed class VoskWakeWordProviderTests
             new WakeWordOptions("альфа", 0.80),
             CancellationToken.None);
 
-        await action.Should().ThrowAsync<InvalidDataException>();
+        await action.Should().ThrowAsync<AudioCaptureException>()
+            .Where(exception => exception.Code == AudioInputResultCode.UnsupportedFormat);
         recognizer.DisposeCount.Should().Be(1);
         audio.DisposeCount.Should().Be(0);
     }

@@ -70,8 +70,9 @@ public interface IVoicePipelineStateSource
 public sealed class VoicePipelineStateStore : IVoicePipelineStateSource
 {
     private readonly object _sync = new();
-    private readonly object _publishSync = new();
+    private readonly Queue<VoicePipelineSnapshot> _pendingNotifications = [];
     private VoicePipelineSnapshot _snapshot = VoicePipelineSnapshot.Disabled;
+    private bool _isDispatching;
 
     /// <summary>Raised after a new immutable snapshot becomes current.</summary>
     public event EventHandler<VoicePipelineSnapshot>? SnapshotChanged;
@@ -91,14 +92,57 @@ public sealed class VoicePipelineStateStore : IVoicePipelineStateSource
     internal void Publish(VoicePipelineSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        lock (_publishSync)
+        lock (_sync)
         {
-            lock (_sync)
+            _snapshot = snapshot;
+            _pendingNotifications.Enqueue(snapshot);
+            if (_isDispatching)
             {
-                _snapshot = snapshot;
+                return;
             }
 
-            SnapshotChanged?.Invoke(this, snapshot);
+            _isDispatching = true;
+        }
+
+        while (true)
+        {
+            VoicePipelineSnapshot next;
+            EventHandler<VoicePipelineSnapshot>? subscribers;
+            lock (_sync)
+            {
+                if (_pendingNotifications.Count == 0)
+                {
+                    _isDispatching = false;
+                    return;
+                }
+
+                next = _pendingNotifications.Dequeue();
+                subscribers = SnapshotChanged;
+            }
+
+            NotifySubscribers(subscribers, next);
+        }
+    }
+
+    private void NotifySubscribers(
+        EventHandler<VoicePipelineSnapshot>? subscribers,
+        VoicePipelineSnapshot snapshot)
+    {
+        if (subscribers is null)
+        {
+            return;
+        }
+
+        foreach (EventHandler<VoicePipelineSnapshot> subscriber in subscribers.GetInvocationList())
+        {
+            try
+            {
+                subscriber(this, snapshot);
+            }
+            catch
+            {
+                // Presentation subscribers cannot interrupt ordered state publication.
+            }
         }
     }
 }
