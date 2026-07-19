@@ -13,6 +13,7 @@ runtime/
 /tmp/
 publish/
 artifacts/
+.worktrees/
 *.wav
 *.mp3
 *.gguf
