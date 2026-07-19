@@ -18,8 +18,10 @@ public interface IVoiceActivityDetector
 {
     /// <summary>Captures one bounded command after speech starts.</summary>
     Task<VoiceActivityResult> CaptureAsync(
-        IAudioCaptureSession input,
+        IVoiceAudioCursor cursor,
+        AmbientNoiseSnapshot ambientNoise,
         VoiceActivityOptions options,
+        Action<VoiceActivityProgress> progress,
         CancellationToken cancellationToken);
 }
 
@@ -31,7 +33,7 @@ public interface IWakeWordProvider
 
     /// <summary>Waits for a wake phrase detection event.</summary>
     Task<WakeWordDetectionResult> WaitForDetectionAsync(
-        IAudioCaptureSession audio,
+        IVoiceAudioCursor audio,
         WakeWordOptions options,
         CancellationToken cancellationToken);
 }
@@ -108,38 +110,22 @@ public interface IVoiceSignalService
 }
 
 /// <summary>Configures speech end detection.</summary>
-public sealed partial record VoiceActivityOptions(
+public sealed record VoiceActivityOptions(
+    TimeSpan PreRollDuration,
     TimeSpan MinimumSpeechDuration,
-    TimeSpan SilenceTimeout,
+    TimeSpan InitialSilenceTimeout,
+    TimeSpan EndSilenceTimeout,
     TimeSpan MaximumCommandDuration,
     double Sensitivity = 0.80)
 {
     /// <summary>Gets the DeskPilot default voice activity configuration.</summary>
     public static VoiceActivityOptions Default { get; } = new(
-        TimeSpan.FromMilliseconds(250),
-        TimeSpan.FromMilliseconds(900),
-        TimeSpan.FromSeconds(10),
-        0.80);
-
-    /// <summary>Gets the duration of audio retained before the detected speech.</summary>
-    public TimeSpan PreRollDuration { get; init; }
-
-    /// <summary>Gets the maximum wait before speech starts.</summary>
-    public TimeSpan InitialSilenceTimeout { get; init; }
-
-    /// <summary>Gets the maximum silence duration after speech ends.</summary>
-    public TimeSpan EndSilenceTimeout => SilenceTimeout;
-
-    /// <summary>Gets the approved continuous voice endpointing configuration.</summary>
-    public static VoiceActivityOptions ContinuousDefault { get; } = new(
+        TimeSpan.FromMilliseconds(300),
         TimeSpan.FromMilliseconds(150),
+        TimeSpan.FromSeconds(4),
         TimeSpan.FromMilliseconds(1_200),
         TimeSpan.FromSeconds(10),
-        0.80)
-    {
-        PreRollDuration = TimeSpan.FromMilliseconds(300),
-        InitialSilenceTimeout = TimeSpan.FromSeconds(4),
-    };
+        0.80);
 }
 
 /// <summary>Describes in-progress voice activity metrics.</summary>
@@ -168,55 +154,16 @@ public sealed record VoiceActivityDiagnostics(
 }
 
 /// <summary>Contains a voice activity detection result.</summary>
-public sealed partial record VoiceActivityResult(
+public sealed record VoiceActivityResult(
     bool SpeechDetected,
     TimeSpan Duration,
-    CapturedCommandAudio? Audio)
-{
-    /// <summary>Gets diagnostics captured during voice activity detection.</summary>
-    public VoiceActivityDiagnostics Diagnostics { get; init; } = VoiceActivityDiagnostics.Empty;
-}
+    CapturedCommandAudio? Audio,
+    VoiceActivityDiagnostics Diagnostics);
 
 /// <summary>Contains a wake phrase detection result.</summary>
-public sealed partial record WakeWordDetectionResult(string Phrase, double Confidence)
-{
-    /// <summary>Gets the absolute sample offset where the wake phrase starts.</summary>
-    public long? WakeStartSampleOffset { get; init; }
-
-    /// <summary>Gets the absolute sample offset where the wake phrase ends.</summary>
-    public long? WakeEndSampleOffset { get; init; }
-
-    /// <summary>Gets the absolute sample offset where detection completed.</summary>
-    public long? DetectionSampleOffset { get; init; }
-
-    /// <summary>Creates a wake phrase detection result with absolute sample offsets.</summary>
-    public WakeWordDetectionResult(
-        string phrase,
-        double confidence,
-        long wakeStartSampleOffset,
-        long wakeEndSampleOffset,
-        long detectionSampleOffset)
-        : this(phrase, confidence)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegative(wakeStartSampleOffset);
-        ArgumentOutOfRangeException.ThrowIfNegative(wakeEndSampleOffset);
-        ArgumentOutOfRangeException.ThrowIfNegative(detectionSampleOffset);
-        if (wakeStartSampleOffset > wakeEndSampleOffset)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(wakeEndSampleOffset),
-                "Wake end sample offset must not precede the wake start sample offset.");
-        }
-
-        if (wakeEndSampleOffset > detectionSampleOffset)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(detectionSampleOffset),
-                "Detection sample offset must not precede the wake end sample offset.");
-        }
-
-        WakeStartSampleOffset = wakeStartSampleOffset;
-        WakeEndSampleOffset = wakeEndSampleOffset;
-        DetectionSampleOffset = detectionSampleOffset;
-    }
-}
+public sealed record WakeWordDetectionResult(
+    string Phrase,
+    double Confidence,
+    long WakeStartSampleOffset,
+    long WakeEndSampleOffset,
+    long DetectionSampleOffset);

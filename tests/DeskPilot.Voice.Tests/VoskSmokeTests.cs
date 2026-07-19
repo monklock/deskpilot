@@ -20,7 +20,7 @@ public sealed class VoskSmokeTests
             return;
         }
 
-        await using var audio = WaveCaptureSession.Load(audioPath);
+        await using var audio = WaveAudioCursor.Load(audioPath);
         var provider = new VoskWakeWordProvider(modelPath, new VoskRecognizerClientFactory());
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
@@ -31,17 +31,20 @@ public sealed class VoskSmokeTests
 
         result.Phrase.Should().Be("альфа");
         result.Confidence.Should().BeGreaterThanOrEqualTo(0.65);
+        result.WakeStartSampleOffset.Should().BeGreaterThanOrEqualTo(0);
+        result.WakeEndSampleOffset.Should().BeGreaterThan(result.WakeStartSampleOffset);
+        result.DetectionSampleOffset.Should().BeGreaterThanOrEqualTo(result.WakeEndSampleOffset);
     }
 
-    private sealed class WaveCaptureSession(byte[] pcm16) : IAudioCaptureSession
+    private sealed class WaveAudioCursor(byte[] pcm16) : IVoiceAudioCursor
     {
         private const int FrameSize = 3_200;
 
-        public string EndpointId => "vosk-smoke-wave";
-
         public AudioFormat Format => AudioFormat.Pcm16KhzMono;
 
-        public static WaveCaptureSession Load(string path)
+        public long StartSampleOffset => 0;
+
+        public static WaveAudioCursor Load(string path)
         {
             using var stream = File.OpenRead(path);
             using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: false);
@@ -93,12 +96,13 @@ public sealed class VoskSmokeTests
                     "The Vosk smoke audio must contain mono 16 kHz PCM16 data.");
             }
 
-            return new WaveCaptureSession(audio);
+            return new WaveAudioCursor(audio);
         }
 
-        public async IAsyncEnumerable<AudioFrame> ReadFramesAsync(
+        public async IAsyncEnumerable<SequencedAudioFrame> ReadFramesAsync(
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
+            long sampleOffset = 0;
             for (var offset = 0; offset < pcm16.Length; offset += FrameSize)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -106,9 +110,13 @@ public sealed class VoskSmokeTests
                 var frame = new byte[length];
                 Buffer.BlockCopy(pcm16, offset, frame, 0, length);
                 await Task.Yield();
-                yield return new AudioFrame(
+                var sampleCount = length / sizeof(short);
+                yield return new SequencedAudioFrame(
                     frame,
-                    TimeSpan.FromSeconds(length / 32_000d));
+                    TimeSpan.FromSeconds(length / 32_000d),
+                    sampleOffset,
+                    sampleOffset + sampleCount);
+                sampleOffset += sampleCount;
             }
         }
 

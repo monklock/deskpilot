@@ -32,6 +32,18 @@ public sealed record VoicePipelineSnapshot(
     /// <summary>Gets the last command execution status.</summary>
     public CommandExecutionStatus? LastExecutionStatus { get; init; }
 
+    /// <summary>Gets whether the exact selected microphone session is active.</summary>
+    public bool IsCaptureActive { get; init; }
+
+    /// <summary>Gets the bounded command duration captured in the current cycle.</summary>
+    public TimeSpan? LastCapturedCommandDuration { get; init; }
+
+    /// <summary>Gets the current cycle's in-memory ambient noise measurement.</summary>
+    public double? LastNoiseFloorRms { get; init; }
+
+    /// <summary>Gets the current cycle's in-memory peak measurement.</summary>
+    public double? LastPeakRms { get; init; }
+
     /// <summary>Gets the initial disabled snapshot.</summary>
     public static VoicePipelineSnapshot Disabled { get; } = new(
         VoiceAssistantState.Disabled,
@@ -58,6 +70,7 @@ public interface IVoicePipelineStateSource
 public sealed class VoicePipelineStateStore : IVoicePipelineStateSource
 {
     private readonly object _sync = new();
+    private readonly object _publishSync = new();
     private VoicePipelineSnapshot _snapshot = VoicePipelineSnapshot.Disabled;
 
     /// <summary>Raised after a new immutable snapshot becomes current.</summary>
@@ -78,11 +91,14 @@ public sealed class VoicePipelineStateStore : IVoicePipelineStateSource
     internal void Publish(VoicePipelineSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        lock (_sync)
+        lock (_publishSync)
         {
-            _snapshot = snapshot;
-        }
+            lock (_sync)
+            {
+                _snapshot = snapshot;
+            }
 
-        SnapshotChanged?.Invoke(this, snapshot);
+            SnapshotChanged?.Invoke(this, snapshot);
+        }
     }
 }

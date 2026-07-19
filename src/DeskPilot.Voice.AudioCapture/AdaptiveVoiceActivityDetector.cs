@@ -4,7 +4,7 @@ using DeskPilot.Voice.Abstractions;
 namespace DeskPilot.Voice.AudioCapture;
 
 /// <summary>Captures bounded commands using adaptive energy endpointing.</summary>
-public sealed class AdaptiveVoiceActivityDetector
+public sealed class AdaptiveVoiceActivityDetector : IVoiceActivityDetector
 {
     private const int SampleRate = 16_000;
     private const int BytesPerSample = sizeof(short);
@@ -294,16 +294,17 @@ public sealed class AdaptiveVoiceActivityDetector
         var observedDuration = FromSamples(state.TotalObservedSamples);
         if (!state.SpeechConfirmed)
         {
-            return new VoiceActivityResult(false, observedDuration, null)
-            {
-                Diagnostics = new VoiceActivityDiagnostics(
+            return new VoiceActivityResult(
+                false,
+                observedDuration,
+                null,
+                new VoiceActivityDiagnostics(
                     observedDuration,
                     TimeSpan.Zero,
                     null,
                     null,
                     state.AdaptiveNoiseFloor,
-                    state.PeakRms),
-            };
+                    state.PeakRms));
         }
 
         var captured = commandBuffer.AsSpan(0, state.CommandLength).ToArray();
@@ -313,16 +314,17 @@ public sealed class AdaptiveVoiceActivityDetector
             captured,
             AudioFormat.Pcm16KhzMono,
             capturedDuration);
-        return new VoiceActivityResult(true, capturedDuration, audio)
-        {
-            Diagnostics = new VoiceActivityDiagnostics(
+        return new VoiceActivityResult(
+            true,
+            capturedDuration,
+            audio,
+            new VoiceActivityDiagnostics(
                 observedDuration,
                 capturedDuration,
                 state.SpeechStartSampleOffset,
                 state.SpeechEndSampleOffset,
                 state.AdaptiveNoiseFloor,
-                state.PeakRms),
-        };
+                state.PeakRms));
     }
 
     internal static (double Start, double Continue) MapThresholds(

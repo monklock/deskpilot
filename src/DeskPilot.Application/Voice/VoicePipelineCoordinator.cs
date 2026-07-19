@@ -31,14 +31,17 @@ public interface IVoicePipelineController
     Task RestartAsync(CancellationToken cancellationToken);
 }
 
-/// <summary>Owns the cancellable Milestone 2 voice state machine.</summary>
+/// <summary>Owns one continuous capture session across wake and command cycles.</summary>
 public sealed class VoicePipelineCoordinator : IVoicePipelineController
 {
+    private const string InvalidWakeTimingCode = "voice-wake-timing-invalid";
+    private const string InvalidWakeTimingMessage =
+        "Не удалось определить границы ключевой фразы. Повторите попытку.";
     private readonly IVoiceSettingsRepository _settings;
     private readonly IVoiceModelStore _models;
     private readonly IVoiceRuntimeProviderFactory _runtimeProviders;
     private readonly IAudioInputDeviceService _devices;
-    private readonly IAudioCaptureSessionFactory _captures;
+    private readonly IBufferedVoiceCaptureSessionFactory _captures;
     private readonly IVoiceActivityDetector _voiceActivity;
     private readonly IVoiceSignalService _signals;
     private readonly IVoiceCommandExecutionService _commands;
@@ -56,7 +59,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         IVoiceModelStore models,
         IVoiceRuntimeProviderFactory runtimeProviders,
         IAudioInputDeviceService devices,
-        IAudioCaptureSessionFactory captures,
+        IBufferedVoiceCaptureSessionFactory captures,
         IVoiceActivityDetector voiceActivity,
         IVoiceSignalService signals,
         IVoiceCommandExecutionService commands,
@@ -117,7 +120,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
                 _runTask = null;
                 _runCancellation = null;
                 runCancellation?.Dispose();
-                Publish(VoiceAssistantState.Disabled);
+                PublishDisabled();
             }
         }
         finally
@@ -133,59 +136,9 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         await EnableAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Runs exactly one wake-to-command cycle.</summary>
-    public async Task RunSingleCycleAsync(CancellationToken cancellationToken)
-    {
-        await _pipelineGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            try
-            {
-                await RunSingleCycleCoreAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (VoicePipelineResourceException exception)
-            {
-                _logger.LogWarning("Voice pipeline resource failure {ErrorCode}.", exception.Code);
-                PublishError(exception.Code, exception.SafeMessage);
-            }
-            catch (AudioCaptureException exception)
-            {
-                _logger.LogWarning("Voice capture failure {ResultCode}.", exception.Code);
-                PublishError(ToCaptureErrorCode(exception.Code), ToCaptureSafeMessage(exception.Code));
-            }
-            catch (SpeechRecognitionException exception)
-            {
-                _logger.LogWarning("Voice recognition failure {FailureCode}.", exception.Code);
-                await PlaySignalSafelyAsync(VoiceSignal.Failure, cancellationToken).ConfigureAwait(false);
-                Publish(_state.Snapshot with
-                {
-                    State = VoiceAssistantState.Error,
-                    LastRecognizedText = exception.RecognizedText,
-                    LastRecognitionConfidence = exception.RecognitionConfidence,
-                    LastResolvedCommandId = null,
-                    LastIntentStatus = null,
-                    LastIntentConfidence = null,
-                    LastExecutionStatus = null,
-                    ErrorCode = ToSpeechErrorCode(exception.Code),
-                    SafeMessage = ToSpeechSafeMessage(exception.Code),
-                });
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                _logger.LogError("Voice pipeline failed with {ExceptionType}.", exception.GetType().Name);
-                await PlaySignalSafelyAsync(VoiceSignal.Failure, cancellationToken).ConfigureAwait(false);
-                PublishError("voice-pipeline-failed", "Голосовой контур временно недоступен. Повторите попытку.");
-            }
-        }
-        finally
-        {
-            _pipelineGate.Release();
-        }
-    }
+    /// <summary>Runs exactly one wake-to-command cycle in one owned buffered session.</summary>
+    public Task RunSingleCycleAsync(CancellationToken cancellationToken) =>
+        ExecuteOwnedSessionSafelyAsync(cycleLimit: 1, cancellationToken);
 
     internal async Task<IAsyncDisposable> EnterIdleAsync(CancellationToken cancellationToken)
     {
@@ -215,7 +168,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             runCancellation?.Dispose();
             await _pipelineGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             pipelineHeld = true;
-            Publish(VoiceAssistantState.Disabled);
+            PublishDisabled();
             return new IdleLease(this, shouldResume);
         }
         catch
@@ -241,19 +194,29 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                await RunSingleCycleAsync(cancellationToken).ConfigureAwait(false);
-                if (_state.Snapshot.State == VoiceAssistantState.Error)
+                await ExecuteOwnedSessionSafelyAsync(cycleLimit: null, cancellationToken)
+                    .ConfigureAwait(false);
+
+                var snapshot = _state.Snapshot;
+                if (snapshot.State != VoiceAssistantState.Error)
                 {
-                    var settings = await _settings.GetAsync(cancellationToken).ConfigureAwait(false);
-                    if (string.Equals(_state.Snapshot.ErrorCode, "microphone-unavailable", StringComparison.Ordinal)
-                        || string.Equals(_state.Snapshot.ErrorCode, "microphone-disconnected", StringComparison.Ordinal))
-                    {
-                        await WaitForMicrophoneAsync(settings.MicrophoneEndpointId, cancellationToken).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await Task.Delay(settings.Cooldown, _timeProvider, cancellationToken).ConfigureAwait(false);
-                    }
+                    continue;
+                }
+
+                var settings = await _settings.GetAsync(cancellationToken).ConfigureAwait(false);
+                var recoveryEndpoint = snapshot.ErrorCode == "microphone-disconnected"
+                    ? snapshot.MicrophoneEndpointId
+                    : settings.MicrophoneEndpointId;
+                if (snapshot.ErrorCode is "microphone-unavailable" or "microphone-disconnected"
+                    && !string.IsNullOrWhiteSpace(recoveryEndpoint))
+                {
+                    await WaitForMicrophoneAsync(recoveryEndpoint, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await Task.Delay(settings.Cooldown, _timeProvider, cancellationToken)
+                        .ConfigureAwait(false);
                 }
             }
         }
@@ -262,31 +225,105 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         }
     }
 
-    private async Task RunSingleCycleCoreAsync(CancellationToken cancellationToken)
+    private async Task ExecuteOwnedSessionSafelyAsync(
+        int? cycleLimit,
+        CancellationToken cancellationToken)
+    {
+        await _pipelineGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            try
+            {
+                await RunOwnedSessionCoreAsync(cycleLimit, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (VoicePipelineResourceException exception)
+            {
+                _logger.LogWarning(
+                    "Voice pipeline resource failure {ErrorCode}.",
+                    exception.Code);
+                PublishError(exception.Code, exception.SafeMessage);
+            }
+            catch (AudioCaptureException exception)
+            {
+                _logger.LogWarning(
+                    "Voice capture failure {ResultCode}.",
+                    exception.Code);
+                PublishError(
+                    ToCaptureErrorCode(exception.Code),
+                    ToCaptureSafeMessage(exception.Code));
+            }
+            catch (SpeechRecognitionException exception)
+            {
+                _logger.LogWarning(
+                    "Voice recognition failure {FailureCode}.",
+                    exception.Code);
+                await PlaySignalSafelyAsync(VoiceSignal.Failure, cancellationToken)
+                    .ConfigureAwait(false);
+                Publish(_state.Snapshot with
+                {
+                    State = VoiceAssistantState.Error,
+                    LastRecognizedText = exception.RecognizedText,
+                    LastRecognitionConfidence = exception.RecognitionConfidence,
+                    LastResolvedCommandId = null,
+                    LastIntentStatus = null,
+                    LastIntentConfidence = null,
+                    LastExecutionStatus = null,
+                    ErrorCode = ToSpeechErrorCode(exception.Code),
+                    SafeMessage = ToSpeechSafeMessage(exception.Code),
+                });
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(
+                    "Voice pipeline failed with {ExceptionType}.",
+                    exception.GetType().Name);
+                await PlaySignalSafelyAsync(VoiceSignal.Failure, cancellationToken)
+                    .ConfigureAwait(false);
+                PublishError(
+                    "voice-pipeline-failed",
+                    "Голосовой контур временно недоступен. Повторите попытку.");
+            }
+        }
+        finally
+        {
+            _pipelineGate.Release();
+        }
+    }
+
+    private async Task RunOwnedSessionCoreAsync(
+        int? cycleLimit,
+        CancellationToken cancellationToken)
     {
         var settings = await _settings.GetAsync(cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(settings.MicrophoneEndpointId))
+        {
+            throw MicrophoneUnavailable();
+        }
+
         var wakeModel = await _models
             .GetActiveAsync(VoiceModelProvider.WakeVosk, cancellationToken)
             .ConfigureAwait(false)
-            ?? throw new VoicePipelineResourceException(
-                "model-unavailable",
-                "Встроенная модель распознавания недоступна. Восстановите модели.");
+            ?? throw ModelUnavailable();
         var commandModel = await _models
             .GetActiveAsync(VoiceModelProvider.CommandWhisper, cancellationToken)
             .ConfigureAwait(false)
-            ?? throw new VoicePipelineResourceException(
-                "model-unavailable",
-                "Встроенная модель распознавания недоступна. Восстановите модели.");
+            ?? throw ModelUnavailable();
         var resolution = await _devices
             .ResolveAsync(settings.MicrophoneEndpointId, cancellationToken)
             .ConfigureAwait(false);
-        if (resolution.Code != AudioInputResultCode.Success || resolution.Device is null)
+        if (resolution.Code != AudioInputResultCode.Success
+            || resolution.Device is null
+            || !string.Equals(
+                resolution.Device.EndpointId,
+                settings.MicrophoneEndpointId,
+                StringComparison.Ordinal))
         {
-            throw new VoicePipelineResourceException(
-                "microphone-unavailable",
-                settings.MicrophoneEndpointId is null
-                    ? "Микрофон недоступен. Подключите устройство ввода и обновите список."
-                    : "Сохранённый Bluetooth- или USB-микрофон недоступен. Подключите это же устройство.");
+            throw MicrophoneUnavailable();
         }
 
         VoiceRuntimeProviders providers;
@@ -296,35 +333,61 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         }
         catch (InvalidOperationException)
         {
-            throw new VoicePipelineResourceException(
-                "model-unavailable",
-                "Активная модель распознавания недоступна. Восстановите встроенную модель.");
+            throw ModelUnavailable();
         }
-        var current = _state.Snapshot with
-        {
-            MicrophoneEndpointId = resolution.Device.EndpointId,
-            ErrorCode = null,
-            SafeMessage = null,
-            LastResolvedCommandId = null,
-            LastIntentStatus = null,
-            LastIntentConfidence = null,
-            LastExecutionStatus = null,
-            ActiveWakeModelVersion = wakeModel.Version,
-            ActiveCommandModelVersion = commandModel.Version,
-        };
-        Publish(current with { State = VoiceAssistantState.WaitingForWakeWord });
 
+        var capture = await _captures
+            .OpenAsync(settings.MicrophoneEndpointId, cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            await using (capture.ConfigureAwait(false))
+            {
+                ValidateCapture(capture, settings.MicrophoneEndpointId);
+                var completedCycles = 0;
+                while (!cancellationToken.IsCancellationRequested
+                    && (!cycleLimit.HasValue || completedCycles < cycleLimit.Value))
+                {
+                    Publish(NewCycleSnapshot(capture.EndpointId, wakeModel, commandModel));
+                    await RunCycleAsync(
+                            capture,
+                            settings,
+                            providers,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    completedCycles++;
+                }
+            }
+        }
+        finally
+        {
+            Publish(_state.Snapshot with { IsCaptureActive = false });
+        }
+    }
+
+    private async Task RunCycleAsync(
+        IBufferedVoiceCaptureSession capture,
+        VoiceSettings settings,
+        VoiceRuntimeProviders providers,
+        CancellationToken cancellationToken)
+    {
+        var wakeStart = capture.LatestSampleOffset;
         WakeWordDetectionResult detection;
-        await using (var wakeCapture = await _captures
-                         .OpenAsync(resolution.Device.EndpointId, cancellationToken)
-                         .ConfigureAwait(false))
+        AmbientNoiseSnapshot ambientNoise;
+        await using (var wakeCursor = capture.OpenCursor(wakeStart))
         {
             detection = await providers.WakeWord
                 .WaitForDetectionAsync(
-                    wakeCapture,
+                    wakeCursor,
                     new WakeWordOptions(settings.WakePhrase, settings.WakeConfidence),
                     cancellationToken)
                 .ConfigureAwait(false);
+            ValidateWakeDetection(
+                detection,
+                settings,
+                wakeCursor.StartSampleOffset,
+                capture.LatestSampleOffset);
+            ambientNoise = capture.NoiseSnapshot;
         }
 
         Publish(_state.Snapshot with
@@ -335,23 +398,58 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             ErrorCode = null,
             SafeMessage = null,
         });
-        await PlaySignalSafelyAsync(VoiceSignal.Ready, cancellationToken).ConfigureAwait(false);
+        Publish(_state.Snapshot with { State = VoiceAssistantState.ListeningForCommand });
 
         VoiceActivityResult activity;
-        await using (var commandCapture = await _captures
-                         .OpenAsync(resolution.Device.EndpointId, cancellationToken)
-                         .ConfigureAwait(false))
+        var progressSync = new object();
+        var acceptsProgress = true;
+        var progressPublished = false;
+        await using (var commandCursor = capture.OpenCursor(detection.WakeEndSampleOffset))
         {
-            Publish(_state.Snapshot with { State = VoiceAssistantState.ListeningForCommand });
-            Publish(_state.Snapshot with { State = VoiceAssistantState.DetectingSpeechEnd });
-            activity = await _voiceActivity
-                .CaptureAsync(
-                    commandCapture,
-                    VoiceActivityOptions.Default with { Sensitivity = settings.VoiceActivitySensitivity },
-                    cancellationToken)
-                .ConfigureAwait(false);
+            void OnSpeechConfirmed(VoiceActivityProgress progress)
+            {
+                lock (progressSync)
+                {
+                    if (!acceptsProgress || progressPublished)
+                    {
+                        return;
+                    }
+
+                    ValidateProgress(progress, commandCursor.StartSampleOffset);
+                    progressPublished = true;
+                    Publish(_state.Snapshot with
+                    {
+                        State = VoiceAssistantState.DetectingSpeechEnd,
+                        LastNoiseFloorRms = progress.NoiseFloorRms,
+                        LastPeakRms = progress.PeakRms,
+                    });
+                }
+            }
+
+            try
+            {
+                activity = await _voiceActivity
+                    .CaptureAsync(
+                        commandCursor,
+                        ambientNoise,
+                        VoiceActivityOptions.Default with
+                        {
+                            Sensitivity = settings.VoiceActivitySensitivity,
+                        },
+                        OnSpeechConfirmed,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (progressSync)
+                {
+                    acceptsProgress = false;
+                }
+            }
         }
 
+        ValidateActivity(activity, progressPublished);
         if (!activity.SpeechDetected || activity.Audio is null)
         {
             Publish(_state.Snapshot with
@@ -362,15 +460,26 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
                 LastIntentStatus = null,
                 LastIntentConfidence = null,
                 LastExecutionStatus = null,
+                LastCapturedCommandDuration = activity.Diagnostics.CapturedDuration,
+                LastNoiseFloorRms = activity.Diagnostics.NoiseFloorRms,
+                LastPeakRms = activity.Diagnostics.PeakRms,
                 ErrorCode = "speech-not-detected",
                 SafeMessage = "Команда не распознана",
             });
-            await PlaySignalSafelyAsync(VoiceSignal.Failure, cancellationToken).ConfigureAwait(false);
-            await PublishCooldownAsync(settings.Cooldown, cancellationToken).ConfigureAwait(false);
+            await PlaySignalSafelyAsync(VoiceSignal.Failure, cancellationToken)
+                .ConfigureAwait(false);
+            await PublishCooldownAsync(settings.Cooldown, cancellationToken)
+                .ConfigureAwait(false);
             return;
         }
 
-        Publish(_state.Snapshot with { State = VoiceAssistantState.RecognizingCommand });
+        Publish(_state.Snapshot with
+        {
+            State = VoiceAssistantState.RecognizingCommand,
+            LastCapturedCommandDuration = activity.Diagnostics.CapturedDuration,
+            LastNoiseFloorRms = activity.Diagnostics.NoiseFloorRms,
+            LastPeakRms = activity.Diagnostics.PeakRms,
+        });
         var recognition = await providers.SpeechToText
             .RecognizeAsync(
                 activity.Audio,
@@ -413,6 +522,31 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         await PublishCooldownAsync(settings.Cooldown, cancellationToken).ConfigureAwait(false);
     }
 
+    private VoicePipelineSnapshot NewCycleSnapshot(
+        string endpointId,
+        InstalledVoiceModel wakeModel,
+        InstalledVoiceModel commandModel) => _state.Snapshot with
+        {
+            State = VoiceAssistantState.WaitingForWakeWord,
+            MicrophoneEndpointId = endpointId,
+            LastWakePhrase = null,
+            LastWakeConfidence = null,
+            LastRecognizedText = null,
+            LastRecognitionConfidence = null,
+            ErrorCode = null,
+            SafeMessage = null,
+            ActiveWakeModelVersion = wakeModel.Version,
+            ActiveCommandModelVersion = commandModel.Version,
+            LastResolvedCommandId = null,
+            LastIntentStatus = null,
+            LastIntentConfidence = null,
+            LastExecutionStatus = null,
+            IsCaptureActive = true,
+            LastCapturedCommandDuration = null,
+            LastNoiseFloorRms = null,
+            LastPeakRms = null,
+        };
+
     private async Task PublishCooldownAsync(TimeSpan cooldown, CancellationToken cancellationToken)
     {
         Publish(_state.Snapshot with { State = VoiceAssistantState.Cooldown });
@@ -420,20 +554,21 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         Publish(_state.Snapshot with { State = VoiceAssistantState.WaitingForWakeWord });
     }
 
-    private async Task WaitForMicrophoneAsync(string? endpointId, CancellationToken cancellationToken)
+    private async Task WaitForMicrophoneAsync(
+        string endpointId,
+        CancellationToken cancellationToken)
     {
         await foreach (var snapshot in _devices.WatchAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (endpointId is null
-                ? snapshot.Any(device => device.IsAvailable)
-                : snapshot.Any(device => device.IsAvailable
-                    && string.Equals(device.EndpointId, endpointId, StringComparison.Ordinal)))
+            if (snapshot.Any(device => device.IsAvailable
+                && string.Equals(device.EndpointId, endpointId, StringComparison.Ordinal)))
             {
                 return;
             }
         }
 
-        await Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, cancellationToken).ConfigureAwait(false);
+        await Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private ValueTask ExitIdleAsync(bool shouldResume)
@@ -458,7 +593,9 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
     private Task StartRunLoop(CancellationToken cancellationToken) =>
         Task.Run(() => RunLoopAsync(cancellationToken), CancellationToken.None);
 
-    private async Task PlaySignalSafelyAsync(VoiceSignal signal, CancellationToken cancellationToken)
+    private async Task PlaySignalSafelyAsync(
+        VoiceSignal signal,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -477,7 +614,14 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         }
     }
 
-    private void Publish(VoiceAssistantState state) => Publish(_state.Snapshot with { State = state });
+    private void PublishDisabled() => Publish(_state.Snapshot with
+    {
+        State = VoiceAssistantState.Disabled,
+        IsCaptureActive = false,
+        LastCapturedCommandDuration = null,
+        LastNoiseFloorRms = null,
+        LastPeakRms = null,
+    });
 
     private void Publish(VoicePipelineSnapshot snapshot) => _state.Publish(snapshot);
 
@@ -488,17 +632,118 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         SafeMessage = safeMessage,
     });
 
+    private static void ValidateCapture(
+        IBufferedVoiceCaptureSession capture,
+        string endpointId)
+    {
+        if (capture.Format != AudioFormat.Pcm16KhzMono)
+        {
+            throw new AudioCaptureException(
+                AudioInputResultCode.UnsupportedFormat,
+                "Buffered voice capture requires mono 16 kHz PCM16 audio.");
+        }
+
+        if (!string.Equals(capture.EndpointId, endpointId, StringComparison.Ordinal))
+        {
+            throw MicrophoneUnavailable();
+        }
+
+        if (capture.EarliestSampleOffset < 0
+            || capture.LatestSampleOffset < capture.EarliestSampleOffset)
+        {
+            throw new VoicePipelineResourceException(
+                InvalidWakeTimingCode,
+                InvalidWakeTimingMessage);
+        }
+    }
+
+    private static void ValidateWakeDetection(
+        WakeWordDetectionResult detection,
+        VoiceSettings settings,
+        long cursorStartSampleOffset,
+        long latestSampleOffset)
+    {
+        if (detection is null
+            || string.IsNullOrWhiteSpace(detection.Phrase)
+            || !string.Equals(
+                detection.Phrase.Trim(),
+                settings.WakePhrase.Trim(),
+                StringComparison.OrdinalIgnoreCase)
+            || !double.IsFinite(detection.Confidence)
+            || detection.Confidence < settings.WakeConfidence
+            || detection.Confidence > 1
+            || cursorStartSampleOffset < 0
+            || detection.WakeStartSampleOffset < cursorStartSampleOffset
+            || detection.WakeEndSampleOffset < detection.WakeStartSampleOffset
+            || detection.DetectionSampleOffset < detection.WakeEndSampleOffset
+            || detection.DetectionSampleOffset > latestSampleOffset)
+        {
+            throw new VoicePipelineResourceException(
+                InvalidWakeTimingCode,
+                InvalidWakeTimingMessage);
+        }
+    }
+
+    private static void ValidateProgress(
+        VoiceActivityProgress progress,
+        long commandStartSampleOffset)
+    {
+        if (progress is null
+            || progress.SpeechStartSampleOffset < commandStartSampleOffset
+            || !IsNormalizedRms(progress.NoiseFloorRms)
+            || !IsNormalizedRms(progress.PeakRms))
+        {
+            throw new VoicePipelineResourceException(
+                "voice-activity-invalid",
+                "Не удалось определить границы команды. Повторите команду.");
+        }
+    }
+
+    private static void ValidateActivity(VoiceActivityResult activity, bool progressPublished)
+    {
+        if (activity is null
+            || activity.Diagnostics is null
+            || activity.Duration < TimeSpan.Zero
+            || activity.Diagnostics.ObservedDuration < TimeSpan.Zero
+            || activity.Diagnostics.CapturedDuration < TimeSpan.Zero
+            || !IsNormalizedRms(activity.Diagnostics.NoiseFloorRms)
+            || !IsNormalizedRms(activity.Diagnostics.PeakRms)
+            || activity.SpeechDetected != (activity.Audio is not null)
+            || activity.SpeechDetected != progressPublished)
+        {
+            throw new VoicePipelineResourceException(
+                "voice-activity-invalid",
+                "Не удалось определить границы команды. Повторите команду.");
+        }
+    }
+
+    private static bool IsNormalizedRms(double value) =>
+        double.IsFinite(value) && value is >= 0 and <= 1;
+
+    private static VoicePipelineResourceException MicrophoneUnavailable() => new(
+        "microphone-unavailable",
+        "Сохранённый Bluetooth- или USB-микрофон недоступен. Подключите это же устройство.");
+
+    private static VoicePipelineResourceException ModelUnavailable() => new(
+        "model-unavailable",
+        "Встроенная модель распознавания недоступна. Восстановите модели.");
+
     private static string ToCaptureErrorCode(AudioInputResultCode code) => code switch
     {
         AudioInputResultCode.Disconnected => "microphone-disconnected",
         AudioInputResultCode.UnsupportedFormat => "microphone-format-unsupported",
+        AudioInputResultCode.BufferOverrun => "voice-audio-overrun",
         _ => "microphone-capture-failed",
     };
 
     private static string ToCaptureSafeMessage(AudioInputResultCode code) => code switch
     {
-        AudioInputResultCode.Disconnected => "Микрофон отключён. Подключите это же устройство.",
-        AudioInputResultCode.UnsupportedFormat => "Формат микрофона не поддерживается.",
+        AudioInputResultCode.Disconnected =>
+            "Микрофон отключён. Подключите это же устройство.",
+        AudioInputResultCode.UnsupportedFormat =>
+            "Формат микрофона не поддерживается.",
+        AudioInputResultCode.BufferOverrun =>
+            "Не удалось сохранить начало команды. Повторите команду.",
         _ => "Не удалось начать запись с выбранного микрофона.",
     };
 
@@ -513,10 +758,14 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
 
     private static string ToSpeechSafeMessage(SpeechRecognitionFailureCode code) => code switch
     {
-        SpeechRecognitionFailureCode.ModelUnavailable => "Модель распознавания недоступна. Восстановите встроенную модель.",
-        SpeechRecognitionFailureCode.NoText => "Речь не распознана. Повторите команду.",
-        SpeechRecognitionFailureCode.ConfidenceBelowThreshold => "Команда распознана неуверенно. Повторите её.",
-        SpeechRecognitionFailureCode.UnsupportedFormat => "Формат записанного звука не поддерживается.",
+        SpeechRecognitionFailureCode.ModelUnavailable =>
+            "Модель распознавания недоступна. Восстановите встроенную модель.",
+        SpeechRecognitionFailureCode.NoText =>
+            "Речь не распознана. Повторите команду.",
+        SpeechRecognitionFailureCode.ConfidenceBelowThreshold =>
+            "Команда распознана неуверенно. Повторите её.",
+        SpeechRecognitionFailureCode.UnsupportedFormat =>
+            "Формат записанного звука не поддерживается.",
         _ => "Локальное распознавание не выполнено. Повторите команду.",
     };
 
@@ -570,7 +819,10 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         public string SafeMessage { get; } = safeMessage;
     }
 
-    private sealed record CommandOutcome(VoiceSignal Signal, string? ErrorCode, string SafeMessage);
+    private sealed record CommandOutcome(
+        VoiceSignal Signal,
+        string? ErrorCode,
+        string SafeMessage);
 
     private sealed class IdleLease(VoicePipelineCoordinator owner, bool shouldResume) : IAsyncDisposable
     {
@@ -579,7 +831,9 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         public ValueTask DisposeAsync()
         {
             var current = Interlocked.Exchange(ref _owner, null);
-            return current is null ? ValueTask.CompletedTask : current.ExitIdleAsync(shouldResume);
+            return current is null
+                ? ValueTask.CompletedTask
+                : current.ExitIdleAsync(shouldResume);
         }
     }
 }

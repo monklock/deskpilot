@@ -27,66 +27,6 @@ public sealed class VoskWakeWordProvider(
 
     /// <inheritdoc />
     public async Task<WakeWordDetectionResult> WaitForDetectionAsync(
-        IAudioCaptureSession audio,
-        WakeWordOptions options,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(audio);
-        ArgumentNullException.ThrowIfNull(options);
-        cancellationToken.ThrowIfCancellationRequested();
-        if (audio.Format != AudioFormat.Pcm16KhzMono)
-        {
-            throw new AudioCaptureException(
-                AudioInputResultCode.UnsupportedFormat,
-                "Vosk требуется монофонический PCM16 поток с частотой 16 кГц.");
-        }
-
-        var phrase = options.Phrase?.Trim();
-        if (string.IsNullOrWhiteSpace(phrase))
-        {
-            throw new ArgumentException("Wake phrase is required.", nameof(options));
-        }
-
-        if (!double.IsFinite(options.MinimumConfidence)
-            || options.MinimumConfidence is < 0.65 or > 0.90)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(options),
-                options.MinimumConfidence,
-                "Wake confidence must be between 0.65 and 0.90.");
-        }
-
-        var grammarJson = JsonSerializer.Serialize(new[] { phrase }, GrammarJsonOptions);
-        using var recognizer = _recognizers.Create(_modelPath, grammarJson);
-        await foreach (var frame in audio.ReadFramesAsync(cancellationToken).ConfigureAwait(false))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var recognition = recognizer.Accept(frame.Pcm16);
-            if (TryCreateDetection(
-                recognition,
-                phrase,
-                options.MinimumConfidence,
-                out var detection))
-            {
-                return detection;
-            }
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        if (TryCreateDetection(
-            recognizer.Complete(),
-            phrase,
-            options.MinimumConfidence,
-            out var completedDetection))
-        {
-            return completedDetection;
-        }
-
-        throw new EndOfStreamException("Поток микрофона завершён до обнаружения ключевой фразы.");
-    }
-
-    /// <summary>Waits for a timed wake phrase on a sequenced buffered-audio cursor.</summary>
-    public async Task<WakeWordDetectionResult> WaitForDetectionAsync(
         IVoiceAudioCursor audio,
         WakeWordOptions options,
         CancellationToken cancellationToken)
@@ -134,27 +74,6 @@ public sealed class VoskWakeWordProvider(
         throw new EndOfStreamException("Поток микрофона завершён до обнаружения ключевой фразы.");
     }
 
-    private static bool TryCreateDetection(
-        VoskRecognition recognition,
-        string phrase,
-        double minimumConfidence,
-        out WakeWordDetectionResult detection)
-    {
-        if (recognition.IsFinal
-            && recognition.Confidence >= minimumConfidence
-            && string.Equals(
-                recognition.Text?.Trim(),
-                phrase,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            detection = new WakeWordDetectionResult(phrase, recognition.Confidence);
-            return true;
-        }
-
-        detection = default!;
-        return false;
-    }
-
     private static string ValidateInput(
         AudioFormat format,
         WakeWordOptions options,
@@ -189,8 +108,28 @@ public sealed class VoskWakeWordProvider(
 
     private static void ValidateFrame(SequencedAudioFrame frame, long expectedStartSampleOffset)
     {
+        if (frame.Pcm16.IsEmpty || frame.Pcm16.Length % sizeof(short) != 0)
+        {
+            throw new InvalidDataException(InvalidWakeTimingMessage);
+        }
+
+        long expectedEndSampleOffset;
+        try
+        {
+            expectedEndSampleOffset = checked(
+                frame.StartSampleOffset + (frame.Pcm16.Length / sizeof(short)));
+        }
+        catch (OverflowException exception)
+        {
+            throw new InvalidDataException(InvalidWakeTimingMessage, exception);
+        }
+
+        var expectedDuration = TimeSpan.FromTicks(
+            checked((long)(frame.Pcm16.Length / sizeof(short))
+                * (TimeSpan.TicksPerSecond / SamplesPerSecond)));
         if (frame.StartSampleOffset != expectedStartSampleOffset
-            || frame.EndSampleOffset <= frame.StartSampleOffset)
+            || frame.EndSampleOffset != expectedEndSampleOffset
+            || frame.Duration != expectedDuration)
         {
             throw new InvalidDataException(InvalidWakeTimingMessage);
         }
@@ -227,8 +166,8 @@ public sealed class VoskWakeWordProvider(
 
         if (recognition.Words is null
             || recognition.Words.Count != 1
-            || !string.Equals(
-                recognition.Words[0].Word,
+                || !string.Equals(
+                recognition.Words[0].Word?.Trim(),
                 phrase,
                 StringComparison.OrdinalIgnoreCase))
         {

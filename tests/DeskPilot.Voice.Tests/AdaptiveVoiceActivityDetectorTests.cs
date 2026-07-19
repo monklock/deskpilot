@@ -30,7 +30,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await detector.CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             progress.Add,
             CancellationToken.None);
 
@@ -59,7 +59,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -83,7 +83,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -106,7 +106,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -122,7 +122,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             progress.Add,
             CancellationToken.None);
 
@@ -149,7 +149,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -170,7 +170,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -187,7 +187,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -205,14 +205,12 @@ public sealed class AdaptiveVoiceActivityDetectorTests
             startSampleOffset,
             TestPcm.Speech(160, 0.20));
         var options = new VoiceActivityOptions(
+            TimeSpan.FromMilliseconds(20),
             TimeSpan.FromMilliseconds(150),
+            TimeSpan.FromMilliseconds(159),
             TimeSpan.FromMilliseconds(20),
             TimeSpan.FromMilliseconds(159),
-            0.80)
-        {
-            PreRollDuration = TimeSpan.FromMilliseconds(20),
-            InitialSilenceTimeout = TimeSpan.FromMilliseconds(159),
-        };
+            0.80);
         var progress = new List<VoiceActivityProgress>();
 
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
@@ -244,7 +242,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             progress.Add,
             CancellationToken.None);
 
@@ -265,7 +263,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -283,7 +281,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         await using var cursor = TestCursor.FromPcm(
             0,
             TestPcm.Concat(TestPcm.Speech(200, 0.028), TestPcm.Silence(1_200, 0)));
-        var options = VoiceActivityOptions.ContinuousDefault with { Sensitivity = sensitivity };
+        var options = VoiceActivityOptions.Default with { Sensitivity = sensitivity };
 
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
@@ -310,7 +308,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -329,7 +327,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var action = () => new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -352,7 +350,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var action = () => new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -382,7 +380,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var action = () => new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -404,7 +402,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             progress.Add,
             CancellationToken.None);
 
@@ -428,7 +426,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             value =>
             {
                 cursor.ReadFrameCount.Should().Be(8);
@@ -476,7 +474,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var action = () => new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -496,7 +494,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var action = () => new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -517,7 +515,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var action = () => new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -534,7 +532,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         await using var cursor = TestCursor.FromPcm(
             0,
             TestPcm.Concat(TestPcm.Constant(160, sample), TestPcm.Silence(1_200, 0)));
-        var options = VoiceActivityOptions.ContinuousDefault with { Sensitivity = 0.65 };
+        var options = VoiceActivityOptions.Default with { Sensitivity = 0.65 };
 
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
@@ -561,7 +559,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -586,7 +584,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -604,7 +602,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             progress.Add,
             CancellationToken.None);
 
@@ -626,7 +624,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var capture = detector.CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             progress.Add,
             cancellation.Token);
         await cursor.Waiting.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -655,7 +653,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var action = () => detector.CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ =>
             {
                 progressCount++;
@@ -682,7 +680,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var result = await detector.CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -704,7 +702,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var action = () => detector.CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             progress.Add,
             CancellationToken.None);
 
@@ -728,7 +726,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var action = () => detector.CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -749,7 +747,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var action = () => detector.CaptureAsync(
             cursor,
             Ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ =>
             {
                 callCount++;
@@ -773,7 +771,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
     public async Task CaptureAsync_InvalidSensitivityIsRejected(double sensitivity)
     {
         await using var cursor = TestCursor.Empty(0);
-        var options = VoiceActivityOptions.ContinuousDefault with { Sensitivity = sensitivity };
+        var options = VoiceActivityOptions.Default with { Sensitivity = sensitivity };
 
         var action = () => new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
@@ -799,7 +797,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         var action = () => new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
             ambient,
-            VoiceActivityOptions.ContinuousDefault,
+            VoiceActivityOptions.Default,
             _ => { },
             CancellationToken.None);
 
@@ -812,24 +810,24 @@ public sealed class AdaptiveVoiceActivityDetectorTests
     {
         var invalidOptions = new[]
         {
-            VoiceActivityOptions.ContinuousDefault with { MinimumSpeechDuration = TimeSpan.Zero },
-            VoiceActivityOptions.ContinuousDefault with { SilenceTimeout = TimeSpan.Zero },
-            VoiceActivityOptions.ContinuousDefault with { MaximumCommandDuration = TimeSpan.Zero },
-            VoiceActivityOptions.ContinuousDefault with { PreRollDuration = TimeSpan.Zero },
-            VoiceActivityOptions.ContinuousDefault with { InitialSilenceTimeout = TimeSpan.Zero },
-            VoiceActivityOptions.ContinuousDefault with
+            VoiceActivityOptions.Default with { MinimumSpeechDuration = TimeSpan.Zero },
+            VoiceActivityOptions.Default with { EndSilenceTimeout = TimeSpan.Zero },
+            VoiceActivityOptions.Default with { MaximumCommandDuration = TimeSpan.Zero },
+            VoiceActivityOptions.Default with { PreRollDuration = TimeSpan.Zero },
+            VoiceActivityOptions.Default with { InitialSilenceTimeout = TimeSpan.Zero },
+            VoiceActivityOptions.Default with
             {
                 PreRollDuration = TimeSpan.FromSeconds(11),
             },
-            VoiceActivityOptions.ContinuousDefault with
+            VoiceActivityOptions.Default with
             {
-                SilenceTimeout = TimeSpan.FromSeconds(11),
+                EndSilenceTimeout = TimeSpan.FromSeconds(11),
             },
-            VoiceActivityOptions.ContinuousDefault with
+            VoiceActivityOptions.Default with
             {
                 MinimumSpeechDuration = TimeSpan.FromSeconds(11),
             },
-            VoiceActivityOptions.ContinuousDefault with
+            VoiceActivityOptions.Default with
             {
                 MaximumCommandDuration = TimeSpan.FromSeconds(11),
             },
