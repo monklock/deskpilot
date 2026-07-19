@@ -5,6 +5,7 @@ using DeskPilot.Desktop.ViewModels;
 using DeskPilot.Voice.Abstractions;
 using FluentAssertions;
 using NSubstitute;
+using System.Globalization;
 using Xunit;
 
 namespace DeskPilot.Desktop.Tests;
@@ -174,6 +175,148 @@ public sealed class VoiceControlViewModelTests
         fixture.ViewModel.LastCommandOutcome.Should().Be("Команда не распознана");
     }
 
+    [Fact]
+    public async Task InitializeAsync_ProjectsAlreadyActiveCurrentCaptureDiagnosticsUsingRussianCulture()
+    {
+        var previousCulture = CultureInfo.CurrentCulture;
+        var previousUiCulture = CultureInfo.CurrentUICulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("en-US");
+            CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("en-US");
+            var fixture = VoiceViewModelFixture.Create(
+                VoiceSettings.Default,
+                [],
+                ActiveCaptureSnapshot());
+
+            await fixture.ViewModel.InitializeAsync();
+
+            fixture.ViewModel.CaptureStatus.Should().Be("Микрофон активен");
+            fixture.ViewModel.CapturedDuration.Should().Be("1,84 с");
+            fixture.ViewModel.AudioLevelDiagnostics.Should().Be("Шум: 0,0123; пик: 0,3487");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+            CultureInfo.CurrentUICulture = previousUiCulture;
+        }
+    }
+
+    [Fact]
+    public async Task StateChange_ProjectsCurrentCaptureDiagnosticsAndRaisesPropertyNotifications()
+    {
+        var fixture = VoiceViewModelFixture.Create(VoiceSettings.Default, []);
+        await fixture.ViewModel.InitializeAsync();
+        var changed = new List<string?>();
+        fixture.ViewModel.PropertyChanged += (_, eventArgs) => changed.Add(eventArgs.PropertyName);
+
+        fixture.State.SnapshotChanged +=
+            Raise.Event<EventHandler<VoicePipelineSnapshot>>(fixture.State, ActiveCaptureSnapshot());
+
+        fixture.ViewModel.CaptureStatus.Should().Be("Микрофон активен");
+        fixture.ViewModel.CapturedDuration.Should().Be("1,84 с");
+        fixture.ViewModel.AudioLevelDiagnostics.Should().Be("Шум: 0,0123; пик: 0,3487");
+        changed.Should().Contain(nameof(VoiceControlViewModel.CaptureStatus));
+        changed.Should().Contain(nameof(VoiceControlViewModel.CapturedDuration));
+        changed.Should().Contain(nameof(VoiceControlViewModel.AudioLevelDiagnostics));
+    }
+
+    [Fact]
+    public async Task StateChange_NewCycleAndDisabled_ClearCaptureDiagnostics()
+    {
+        var fixture = VoiceViewModelFixture.Create(VoiceSettings.Default, [], ActiveCaptureSnapshot());
+        await fixture.ViewModel.InitializeAsync();
+
+        fixture.State.SnapshotChanged += Raise.Event<EventHandler<VoicePipelineSnapshot>>(
+            fixture.State,
+            VoicePipelineSnapshot.Disabled with
+            {
+                State = VoiceAssistantState.ListeningForCommand,
+                IsCaptureActive = true,
+            });
+
+        fixture.ViewModel.CaptureStatus.Should().Be("Микрофон активен");
+        fixture.ViewModel.CapturedDuration.Should().Be("—");
+        fixture.ViewModel.AudioLevelDiagnostics.Should().Be("—");
+
+        fixture.State.SnapshotChanged += Raise.Event<EventHandler<VoicePipelineSnapshot>>(
+            fixture.State,
+            ActiveCaptureSnapshot() with
+            {
+                State = VoiceAssistantState.Disabled,
+                IsCaptureActive = false,
+            });
+
+        fixture.ViewModel.CaptureStatus.Should().Be("Микрофон не активен");
+        fixture.ViewModel.CapturedDuration.Should().Be("—");
+        fixture.ViewModel.AudioLevelDiagnostics.Should().Be("—");
+    }
+
+    [Theory]
+    [InlineData(double.NaN, 0.3487)]
+    [InlineData(0.0123, double.PositiveInfinity)]
+    public async Task StateChange_PartialOrInvalidLevels_HidesAllLevelDiagnostics(double noise, double peak)
+    {
+        var fixture = VoiceViewModelFixture.Create(VoiceSettings.Default, []);
+        await fixture.ViewModel.InitializeAsync();
+
+        fixture.State.SnapshotChanged += Raise.Event<EventHandler<VoicePipelineSnapshot>>(
+            fixture.State,
+            ActiveCaptureSnapshot() with
+            {
+                LastNoiseFloorRms = noise,
+                LastPeakRms = peak,
+            });
+
+        fixture.ViewModel.AudioLevelDiagnostics.Should().Be("—");
+    }
+
+    [Fact]
+    public async Task StateChange_FromBackgroundThread_UsesCapturedUiSynchronizationContext()
+    {
+        var previousContext = SynchronizationContext.Current;
+        var context = new PumpingSynchronizationContext();
+        SynchronizationContext.SetSynchronizationContext(context);
+        try
+        {
+            var fixture = VoiceViewModelFixture.Create(VoiceSettings.Default, []);
+            await fixture.ViewModel.InitializeAsync();
+
+            SynchronizationContext.SetSynchronizationContext(null);
+            await Task.Run(() => fixture.State.SnapshotChanged +=
+                Raise.Event<EventHandler<VoicePipelineSnapshot>>(fixture.State, ActiveCaptureSnapshot()));
+
+            fixture.ViewModel.CaptureStatus.Should().Be("Микрофон не активен");
+            context.Drain();
+            fixture.ViewModel.CaptureStatus.Should().Be("Микрофон активен");
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(previousContext);
+        }
+    }
+
+    [Fact]
+    public void Dispose_UnsubscribesFromSnapshotChanges()
+    {
+        var fixture = VoiceViewModelFixture.Create(VoiceSettings.Default, []);
+
+        fixture.ViewModel.Dispose();
+        fixture.State.SnapshotChanged +=
+            Raise.Event<EventHandler<VoicePipelineSnapshot>>(fixture.State, ActiveCaptureSnapshot());
+
+        fixture.ViewModel.CaptureStatus.Should().Be("Микрофон не активен");
+    }
+
+    private static VoicePipelineSnapshot ActiveCaptureSnapshot() => VoicePipelineSnapshot.Disabled with
+    {
+        State = VoiceAssistantState.DetectingSpeechEnd,
+        IsCaptureActive = true,
+        LastCapturedCommandDuration = TimeSpan.FromMilliseconds(1_840),
+        LastNoiseFloorRms = 0.0123,
+        LastPeakRms = 0.3487,
+    };
+
     private static AudioInputDevice Microphone(string id, string name) => new(id, name, false, true);
 
     private sealed class VoiceViewModelFixture
@@ -194,7 +337,8 @@ public sealed class VoiceControlViewModelTests
 
         public static VoiceViewModelFixture Create(
             VoiceSettings settingsValue,
-            IReadOnlyList<AudioInputDevice> microphones)
+            IReadOnlyList<AudioInputDevice> microphones,
+            VoicePipelineSnapshot? snapshot = null)
         {
             var settings = Substitute.For<IVoiceSettingsRepository>();
             var current = settingsValue;
@@ -209,7 +353,7 @@ public sealed class VoiceControlViewModelTests
             devices.GetActiveAsync(Arg.Any<CancellationToken>()).Returns(microphones);
             var controller = Substitute.For<IVoicePipelineController>();
             var state = Substitute.For<IVoicePipelineStateSource>();
-            state.Snapshot.Returns(VoicePipelineSnapshot.Disabled);
+            state.Snapshot.Returns(snapshot ?? VoicePipelineSnapshot.Disabled);
             var manager = Substitute.For<IVoiceModelManager>();
             manager.GetStateAsync(Arg.Any<CancellationToken>()).Returns(VoiceModelState.Empty);
             var models = new VoiceModelManagerViewModel(manager);
@@ -222,6 +366,21 @@ public sealed class VoiceControlViewModelTests
                 Controller = controller,
                 State = state,
             };
+        }
+    }
+
+    private sealed class PumpingSynchronizationContext : SynchronizationContext
+    {
+        private readonly Queue<(SendOrPostCallback Callback, object? State)> _work = [];
+
+        public override void Post(SendOrPostCallback callback, object? state) => _work.Enqueue((callback, state));
+
+        public void Drain()
+        {
+            while (_work.TryDequeue(out var work))
+            {
+                work.Callback(work.State);
+            }
         }
     }
 }

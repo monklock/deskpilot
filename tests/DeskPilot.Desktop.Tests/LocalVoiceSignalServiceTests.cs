@@ -48,6 +48,23 @@ public sealed class LocalVoiceSignalServiceTests
         player.CallCount.Should().Be(0);
     }
 
+    [Theory]
+    [InlineData(VoiceSignal.Success)]
+    [InlineData(VoiceSignal.Failure)]
+    public async Task PlayAsync_SuccessOrFailure_RunsToneOutsideCaller(VoiceSignal signal)
+    {
+        var player = new BlockingTonePlayer();
+        var service = new LocalVoiceSignalService(player);
+
+        var playback = service.PlayAsync(signal, CancellationToken.None);
+        await player.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        playback.IsCompleted.Should().BeFalse();
+        player.Signal.Should().Be(signal);
+        player.Release.TrySetResult();
+        await playback;
+    }
+
     [Fact]
     public void Resolve_UnknownSignal_ThrowsArgumentOutOfRangeException()
     {
