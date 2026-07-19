@@ -1,5 +1,4 @@
 using System.Media;
-using System.Diagnostics;
 using DeskPilot.Desktop.Services;
 using DeskPilot.Voice.Abstractions;
 using FluentAssertions;
@@ -52,22 +51,46 @@ public sealed class LocalVoiceSignalServiceTests
     [Theory]
     [InlineData(VoiceSignal.Success)]
     [InlineData(VoiceSignal.Failure)]
-    public async Task PlayAsync_SuccessOrFailure_RunsToneOutsideCaller(VoiceSignal signal)
+    public async Task PlayAsync_SuccessOrFailure_RunsToneOutsideDedicatedCallerThread(VoiceSignal signal)
     {
         var player = new BlockingTonePlayer();
         var service = new LocalVoiceSignalService(player);
-        var callerThreadId = Environment.CurrentManagedThreadId;
-        var stopwatch = Stopwatch.StartNew();
+        var playbackPublished = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callerFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callerThread = new Thread(() =>
+        {
+            try
+            {
+                playbackPublished.TrySetResult(service.PlayAsync(signal, CancellationToken.None));
+            }
+            catch (Exception exception)
+            {
+                playbackPublished.TrySetException(exception);
+            }
+            finally
+            {
+                callerFinished.TrySetResult();
+            }
+        });
 
-        var playback = service.PlayAsync(signal, CancellationToken.None);
-        await player.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        callerThread.Start();
+        try
+        {
+            var playback = await playbackPublished.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await player.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
-        playback.IsCompleted.Should().BeFalse();
-        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1));
-        player.Signal.Should().Be(signal);
-        player.PlayThreadId.Should().NotBe(callerThreadId);
-        player.Release.TrySetResult();
-        await playback;
+            playback.IsCompleted.Should().BeFalse();
+            player.Signal.Should().Be(signal);
+            player.PlayThreadId.Should().NotBe(callerThread.ManagedThreadId);
+            player.Release.TrySetResult();
+            await playback.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            player.Release.TrySetResult();
+            await callerFinished.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            callerThread.Join();
+        }
     }
 
     [Fact]

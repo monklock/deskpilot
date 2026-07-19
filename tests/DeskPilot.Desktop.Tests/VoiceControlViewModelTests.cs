@@ -109,6 +109,17 @@ public sealed class VoiceControlViewModelTests
     }
 
     [Fact]
+    public void CurrentState_CanBeSetByPresentationHost()
+    {
+        var fixture = VoiceViewModelFixture.Create(VoiceSettings.Default, []);
+
+        fixture.ViewModel.CurrentState = VoiceAssistantState.ListeningForCommand;
+
+        fixture.ViewModel.CurrentState.Should().Be(VoiceAssistantState.ListeningForCommand);
+        fixture.ViewModel.CurrentStateText.Should().Be("Слушаю команду");
+    }
+
+    [Fact]
     public async Task StateChange_ProjectsResolvedCommandAndSafeOutcome()
     {
         var fixture = VoiceViewModelFixture.Create(VoiceSettings.Default, []);

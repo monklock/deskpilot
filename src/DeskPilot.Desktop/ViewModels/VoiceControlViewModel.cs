@@ -41,7 +41,7 @@ public sealed partial class VoiceControlViewModel : ObservableObject, IDisposabl
     public VoiceAssistantState CurrentState
     {
         get => _currentState;
-        private set
+        set
         {
             if (SetProperty(ref _currentState, value))
             {
