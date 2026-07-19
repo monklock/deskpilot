@@ -18,11 +18,42 @@ public sealed record AudioInputDevice(
 public sealed record AudioFrame(ReadOnlyMemory<byte> Pcm16, TimeSpan Duration);
 
 /// <summary>Owns a sequenced normalized PCM16 audio frame.</summary>
-public sealed record SequencedAudioFrame(
-    ReadOnlyMemory<byte> Pcm16,
-    TimeSpan Duration,
-    long StartSampleOffset,
-    long EndSampleOffset);
+public sealed record SequencedAudioFrame
+{
+    /// <summary>Creates a sequenced normalized PCM16 audio frame.</summary>
+    public SequencedAudioFrame(
+        ReadOnlyMemory<byte> pcm16,
+        TimeSpan duration,
+        long startSampleOffset,
+        long endSampleOffset)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(startSampleOffset);
+        ArgumentOutOfRangeException.ThrowIfNegative(endSampleOffset);
+        if (startSampleOffset > endSampleOffset)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(endSampleOffset),
+                "End sample offset must not precede the start sample offset.");
+        }
+
+        Pcm16 = pcm16;
+        Duration = duration;
+        StartSampleOffset = startSampleOffset;
+        EndSampleOffset = endSampleOffset;
+    }
+
+    /// <summary>Gets the frame PCM16 data.</summary>
+    public ReadOnlyMemory<byte> Pcm16 { get; }
+
+    /// <summary>Gets the frame duration.</summary>
+    public TimeSpan Duration { get; }
+
+    /// <summary>Gets the absolute sample offset at which this frame starts.</summary>
+    public long StartSampleOffset { get; }
+
+    /// <summary>Gets the absolute sample offset at which this frame ends.</summary>
+    public long EndSampleOffset { get; }
+}
 
 /// <summary>Describes the ambient noise observed by a buffered capture session.</summary>
 public sealed record AmbientNoiseSnapshot(
@@ -114,6 +145,11 @@ public interface IVoiceAudioCursor : IAsyncDisposable
     long StartSampleOffset { get; }
 
     /// <summary>Reads sequenced frames until stopped, disconnected, or overrun.</summary>
+    /// <exception cref="AudioCaptureException">
+    /// Thrown with <see cref="AudioCaptureException.Code"/> equal to
+    /// <see cref="AudioInputResultCode.BufferOverrun"/> when the requested cursor position has been
+    /// overwritten, including when the cursor was opened before the session's earliest sample offset.
+    /// </exception>
     IAsyncEnumerable<SequencedAudioFrame> ReadFramesAsync(CancellationToken cancellationToken);
 }
 

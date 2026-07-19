@@ -198,6 +198,23 @@ public sealed partial record WakeWordDetectionResult(string Phrase, double Confi
         long detectionSampleOffset)
         : this(phrase, confidence)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(wakeStartSampleOffset);
+        ArgumentOutOfRangeException.ThrowIfNegative(wakeEndSampleOffset);
+        ArgumentOutOfRangeException.ThrowIfNegative(detectionSampleOffset);
+        if (wakeStartSampleOffset > wakeEndSampleOffset)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(wakeEndSampleOffset),
+                "Wake end sample offset must not precede the wake start sample offset.");
+        }
+
+        if (wakeEndSampleOffset > detectionSampleOffset)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(detectionSampleOffset),
+                "Detection sample offset must not precede the wake end sample offset.");
+        }
+
         WakeStartSampleOffset = wakeStartSampleOffset;
         WakeEndSampleOffset = wakeEndSampleOffset;
         DetectionSampleOffset = detectionSampleOffset;
