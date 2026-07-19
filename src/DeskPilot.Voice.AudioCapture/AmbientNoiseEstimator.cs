@@ -6,7 +6,9 @@ namespace DeskPilot.Voice.AudioCapture;
 /// <summary>Maintains a bounded lower-percentile estimate of ambient PCM16 noise.</summary>
 internal sealed class AmbientNoiseEstimator
 {
+    private const int FrameBytes = (16_000 / 50) * sizeof(short);
     private readonly double[] _levels;
+    private readonly object _sync = new();
     private int _count;
     private int _writeIndex;
 
@@ -22,34 +24,44 @@ internal sealed class AmbientNoiseEstimator
 
     internal void Observe(ReadOnlySpan<byte> pcm16)
     {
-        if (pcm16.Length == 0 || pcm16.Length % sizeof(short) != 0)
+        if (pcm16.Length != FrameBytes)
         {
             throw new AudioCaptureException(
                 AudioInputResultCode.UnsupportedFormat,
-                "Ambient estimator requires complete PCM16 samples.");
+                "Ambient estimator requires one 20 ms mono 16 kHz PCM16 frame.");
         }
 
-        _levels[_writeIndex] = PcmRms.Calculate(pcm16);
-        _writeIndex = (_writeIndex + 1) % _levels.Length;
-        _count = Math.Min(_count + 1, _levels.Length);
+        lock (_sync)
+        {
+            _levels[_writeIndex] = PcmRms.Calculate(pcm16);
+            _writeIndex = (_writeIndex + 1) % _levels.Length;
+            _count = Math.Min(_count + 1, _levels.Length);
+        }
     }
 
     internal AmbientNoiseSnapshot Snapshot
     {
         get
         {
-            if (_count == 0)
+            double[] values;
+            int count;
+            lock (_sync)
             {
-                return AmbientNoiseSnapshot.Empty;
+                if (_count == 0)
+                {
+                    return AmbientNoiseSnapshot.Empty;
+                }
+
+                count = _count;
+                values = _levels.AsSpan(0, count).ToArray();
             }
 
-            var values = _levels.AsSpan(0, _count).ToArray();
             Array.Sort(values);
             var index = (int)Math.Floor((values.Length - 1) * 0.20);
             return new AmbientNoiseSnapshot(
                 values[index],
-                TimeSpan.FromMilliseconds(_count * 20),
-                _count);
+                TimeSpan.FromMilliseconds(count * 20),
+                count);
         }
     }
 }

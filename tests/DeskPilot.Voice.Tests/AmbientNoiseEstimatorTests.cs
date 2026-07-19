@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using DeskPilot.Voice.Abstractions;
 using DeskPilot.Voice.AudioCapture;
 using FluentAssertions;
@@ -42,13 +43,16 @@ public sealed class AmbientNoiseEstimatorTests
     }
 
     [Theory]
-    [InlineData(new byte[] { 1 })]
-    [InlineData(new byte[] { })]
-    public void Observe_WhenPcmIsEmptyOrEndsWithIncompleteSample_ThrowsUnsupportedFormat(byte[] pcm16)
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(320)]
+    [InlineData(641)]
+    [InlineData(1280)]
+    public void Observe_WhenPcmIsNotOne20MillisecondFrame_ThrowsUnsupportedFormat(int pcm16Length)
     {
         var estimator = new AmbientNoiseEstimator();
 
-        var action = () => estimator.Observe(pcm16);
+        var action = () => estimator.Observe(new byte[pcm16Length]);
 
         action.Should().Throw<AudioCaptureException>()
             .Where(exception => exception.Code == AudioInputResultCode.UnsupportedFormat);
@@ -67,6 +71,42 @@ public sealed class AmbientNoiseEstimatorTests
     public void PcmRms_Calculate_NormalizesLittleEndianPcm16Samples()
     {
         PcmRms.Calculate(ConstantFrame(0.25)).Should().BeApproximately(0.25, 0.001);
+    }
+
+    [Fact]
+    public async Task ConcurrentObserveAndSnapshot_PublishesBoundedFiniteSnapshots()
+    {
+        var estimator = new AmbientNoiseEstimator();
+        using var start = new ManualResetEventSlim();
+        var snapshots = new ConcurrentBag<AmbientNoiseSnapshot>();
+
+        var observers = Enumerable.Range(0, 4).Select(index => Task.Run(() =>
+        {
+            start.Wait();
+            for (var frame = 0; frame < 1_000; frame++)
+            {
+                estimator.Observe(ConstantFrame((index + frame) % 2 == 0 ? 0.02 : 0.80));
+            }
+        }));
+        var readers = Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
+        {
+            start.Wait();
+            for (var read = 0; read < 1_000; read++)
+            {
+                snapshots.Add(estimator.Snapshot);
+            }
+        }));
+
+        start.Set();
+        await Task.WhenAll(observers.Concat(readers));
+
+        snapshots.Should().NotBeEmpty();
+        snapshots.Should().OnlyContain(snapshot =>
+            snapshot.FrameCount >= 0
+            && snapshot.FrameCount <= 150
+            && snapshot.WindowDuration == TimeSpan.FromMilliseconds(snapshot.FrameCount * 20)
+            && double.IsFinite(snapshot.NoiseFloorRms)
+            && snapshot.NoiseFloorRms >= 0);
     }
 
     private static byte[] ConstantFrame(double amplitude)
