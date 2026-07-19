@@ -21,12 +21,19 @@ public sealed class AudioCaptureRegistrationTests
         services.Should().Contain(descriptor =>
             descriptor.ServiceType == typeof(IAudioInputDeviceService)
             && descriptor.ImplementationType == typeof(NAudioInputDeviceService));
-        services.Should().Contain(descriptor =>
+        services.Should().ContainSingle(descriptor =>
             descriptor.ServiceType == typeof(IWindowsCaptureClientFactory)
             && descriptor.ImplementationType == typeof(NAudioWindowsCaptureClientFactory));
         services.Should().Contain(descriptor =>
             descriptor.ServiceType == typeof(IAudioCaptureSessionFactory)
-            && descriptor.ImplementationType == typeof(NAudioCaptureFactory));
+            && descriptor.ImplementationType == typeof(NAudioCaptureFactory)
+            && descriptor.Lifetime == ServiceLifetime.Singleton);
+        services.Should().ContainSingle(descriptor =>
+            descriptor.ServiceType == typeof(IBufferedVoiceCaptureSessionFactory)
+            && descriptor.ImplementationType == typeof(BufferedVoiceCaptureSessionFactory)
+            && descriptor.Lifetime == ServiceLifetime.Singleton);
+        services.Should().ContainSingle(descriptor =>
+            descriptor.ServiceType == typeof(IAudioCaptureSessionFactory));
         services.Should().Contain(descriptor =>
             descriptor.ServiceType == typeof(IVoiceActivityDetector)
             && descriptor.ImplementationType == typeof(EnergyVoiceActivityDetector)
