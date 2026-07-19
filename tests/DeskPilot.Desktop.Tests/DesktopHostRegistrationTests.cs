@@ -1,4 +1,7 @@
+using DeskPilot.Application.Commands;
+using DeskPilot.Application.Intents;
 using DeskPilot.Application.Voice;
+using DeskPilot.Core.Commands;
 using DeskPilot.Desktop.Services;
 using DeskPilot.Desktop.ViewModels;
 using DeskPilot.Voice.Abstractions;
@@ -22,6 +25,21 @@ public sealed class DesktopHostRegistrationTests
         host.Services.GetRequiredService<IVoiceModelActivationGate>().Should().NotBeNull();
         host.Services.GetRequiredService<VoiceControlViewModel>().Should().NotBeNull();
         host.Services.GetRequiredService<VoiceModelManagerViewModel>().Should().NotBeNull();
+    }
+
+    [Fact]
+    public void CreateHost_ResolvesVoiceCommandExecutionGraph()
+    {
+        using var host = App.CreateHost();
+
+        host.Services.GetRequiredService<ICommandCatalog>()
+            .Commands.Should().NotBeEmpty();
+        host.Services.GetRequiredService<IIntentResolver>()
+            .Should().BeOfType<CompositeIntentResolver>();
+        host.Services.GetRequiredService<IVoiceCommandExecutionService>()
+            .Should().BeOfType<VoiceCommandExecutionService>();
+        host.Services.GetRequiredService<IVoicePipelineController>()
+            .Should().BeOfType<VoicePipelineCoordinator>();
     }
 
     [Fact]

@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using DeskPilot.Application.Voice;
+using DeskPilot.Core.Commands;
 using DeskPilot.Core.Voice;
 using DeskPilot.Voice.Abstractions;
 using Microsoft.Extensions.Logging;
@@ -32,6 +33,9 @@ public sealed partial class VoiceControlViewModel : ObservableObject
 
     [ObservableProperty]
     private string _lastRecognizedText = "—";
+
+    [ObservableProperty]
+    private string _lastCommandOutcome = "—";
 
     [ObservableProperty]
     private string _activeWakeModelVersion = "Не выбрана";
@@ -281,6 +285,7 @@ public sealed partial class VoiceControlViewModel : ObservableObject
     {
         CurrentState = snapshot.State;
         LastRecognizedText = snapshot.LastRecognizedText ?? "—";
+        LastCommandOutcome = ToCommandOutcome(snapshot);
         ActiveWakeModelVersion = snapshot.ActiveWakeModelVersion ?? "Не выбрана";
         ActiveCommandModelVersion = snapshot.ActiveCommandModelVersion ?? "Не выбрана";
         if (!string.IsNullOrWhiteSpace(snapshot.SafeMessage))
@@ -306,10 +311,33 @@ public sealed partial class VoiceControlViewModel : ObservableObject
         VoiceAssistantState.ListeningForCommand => "Слушаю команду",
         VoiceAssistantState.DetectingSpeechEnd => "Определяю окончание речи",
         VoiceAssistantState.RecognizingCommand => "Распознаю локально",
+        VoiceAssistantState.ResolvingCommand => "Определяю команду",
+        VoiceAssistantState.ExecutingCommand => "Выполняю команду",
         VoiceAssistantState.Cooldown => "Пауза",
         VoiceAssistantState.Error => "Требуется внимание",
         _ => state.ToString(),
     };
+
+    private static string ToCommandOutcome(VoicePipelineSnapshot snapshot) =>
+        snapshot.LastResolvedCommandId is null
+            ? snapshot.LastIntentStatus switch
+            {
+                IntentResolutionStatus.NotFound => "Команда не найдена",
+                IntentResolutionStatus.Ambiguous => "Команда неоднозначна",
+                _ => "—",
+            }
+            : snapshot.LastExecutionStatus switch
+            {
+                CommandExecutionStatus.Succeeded =>
+                    $"{snapshot.LastResolvedCommandId} — выполнено",
+                CommandExecutionStatus.Rejected =>
+                    $"{snapshot.LastResolvedCommandId} — отклонено",
+                CommandExecutionStatus.Failed =>
+                    $"{snapshot.LastResolvedCommandId} — ошибка",
+                CommandExecutionStatus.NotFound =>
+                    $"{snapshot.LastResolvedCommandId} — недоступно",
+                _ => snapshot.LastResolvedCommandId,
+            };
 
     partial void OnCurrentStateChanged(VoiceAssistantState value) => OnPropertyChanged(nameof(CurrentStateText));
 

@@ -1,4 +1,5 @@
 using DeskPilot.Application.Voice;
+using DeskPilot.Core.Commands;
 using DeskPilot.Core.Voice;
 using DeskPilot.Desktop.ViewModels;
 using DeskPilot.Voice.Abstractions;
@@ -104,6 +105,31 @@ public sealed class VoiceControlViewModelTests
         fixture.ViewModel.ActiveWakeModelVersion.Should().Be("0.22");
         fixture.ViewModel.ActiveCommandModelVersion.Should().Be("openai-base");
         fixture.ViewModel.StatusMessage.Should().Be("Подключите Bluetooth-микрофон.");
+    }
+
+    [Fact]
+    public async Task StateChange_ProjectsResolvedCommandAndSafeOutcome()
+    {
+        var fixture = VoiceViewModelFixture.Create(VoiceSettings.Default, []);
+        await fixture.ViewModel.InitializeAsync();
+        var snapshot = VoicePipelineSnapshot.Disabled with
+        {
+            State = VoiceAssistantState.ExecutingCommand,
+            LastRecognizedText = "сделай громче",
+            LastResolvedCommandId = "audio.change-volume",
+            LastIntentStatus = IntentResolutionStatus.Resolved,
+            LastIntentConfidence = 1,
+            LastExecutionStatus = CommandExecutionStatus.Succeeded,
+            SafeMessage = "Команда выполнена.",
+        };
+
+        fixture.State.SnapshotChanged +=
+            Raise.Event<EventHandler<VoicePipelineSnapshot>>(fixture.State, snapshot);
+
+        fixture.ViewModel.CurrentStateText.Should().Be("Выполняю команду");
+        fixture.ViewModel.LastCommandOutcome.Should()
+            .Be("audio.change-volume — выполнено");
+        fixture.ViewModel.StatusMessage.Should().Be("Команда выполнена.");
     }
 
     private static AudioInputDevice Microphone(string id, string name) => new(id, name, false, true);
