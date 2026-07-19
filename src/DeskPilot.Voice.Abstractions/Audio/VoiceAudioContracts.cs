@@ -17,6 +17,54 @@ public sealed record AudioInputDevice(
 /// <summary>Owns one normalized PCM16 audio buffer.</summary>
 public sealed record AudioFrame(ReadOnlyMemory<byte> Pcm16, TimeSpan Duration);
 
+/// <summary>Owns a sequenced normalized PCM16 audio frame.</summary>
+public sealed record SequencedAudioFrame
+{
+    /// <summary>Creates a sequenced normalized PCM16 audio frame.</summary>
+    public SequencedAudioFrame(
+        ReadOnlyMemory<byte> pcm16,
+        TimeSpan duration,
+        long startSampleOffset,
+        long endSampleOffset)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(startSampleOffset);
+        ArgumentOutOfRangeException.ThrowIfNegative(endSampleOffset);
+        if (startSampleOffset > endSampleOffset)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(endSampleOffset),
+                "End sample offset must not precede the start sample offset.");
+        }
+
+        Pcm16 = pcm16;
+        Duration = duration;
+        StartSampleOffset = startSampleOffset;
+        EndSampleOffset = endSampleOffset;
+    }
+
+    /// <summary>Gets the frame PCM16 data.</summary>
+    public ReadOnlyMemory<byte> Pcm16 { get; }
+
+    /// <summary>Gets the frame duration.</summary>
+    public TimeSpan Duration { get; }
+
+    /// <summary>Gets the absolute sample offset at which this frame starts.</summary>
+    public long StartSampleOffset { get; }
+
+    /// <summary>Gets the absolute sample offset at which this frame ends.</summary>
+    public long EndSampleOffset { get; }
+}
+
+/// <summary>Describes the ambient noise observed by a buffered capture session.</summary>
+public sealed record AmbientNoiseSnapshot(
+    double NoiseFloorRms,
+    TimeSpan WindowDuration,
+    int FrameCount)
+{
+    /// <summary>Gets an empty noise snapshot.</summary>
+    public static AmbientNoiseSnapshot Empty { get; } = new(0.01, TimeSpan.Zero, 0);
+}
+
 /// <summary>Owns bounded normalized command audio captured entirely in memory.</summary>
 public sealed record CapturedCommandAudio(
     ReadOnlyMemory<byte> Pcm16,
@@ -42,6 +90,8 @@ public enum AudioInputResultCode
     Disconnected,
     /// <summary>The endpoint exposes an unsupported sample format.</summary>
     UnsupportedFormat,
+    /// <summary>Buffered audio was overwritten before a cursor could consume it.</summary>
+    BufferOverrun,
 }
 
 /// <summary>Contains a safe microphone resolution result.</summary>
@@ -83,6 +133,53 @@ public interface IAudioCaptureSessionFactory
 {
     /// <summary>Opens the selected endpoint.</summary>
     Task<IAudioCaptureSession> OpenAsync(string endpointId, CancellationToken cancellationToken);
+}
+
+/// <summary>Reads a sequenced view of a buffered voice capture session.</summary>
+public interface IVoiceAudioCursor : IAsyncDisposable
+{
+    /// <summary>Gets the normalized output format.</summary>
+    AudioFormat Format { get; }
+
+    /// <summary>Gets the absolute sample offset at which this cursor starts.</summary>
+    long StartSampleOffset { get; }
+
+    /// <summary>Reads sequenced frames until stopped, disconnected, or overrun.</summary>
+    /// <exception cref="AudioCaptureException">
+    /// Thrown with <see cref="AudioCaptureException.Code"/> equal to
+    /// <see cref="AudioInputResultCode.BufferOverrun"/> when the requested cursor position has been
+    /// overwritten, including when the cursor was opened before the session's earliest sample offset.
+    /// </exception>
+    IAsyncEnumerable<SequencedAudioFrame> ReadFramesAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>Owns one endpoint capture session with buffered cursor access.</summary>
+public interface IBufferedVoiceCaptureSession : IAsyncDisposable
+{
+    /// <summary>Gets the exact Windows endpoint ID.</summary>
+    string EndpointId { get; }
+
+    /// <summary>Gets the normalized output format.</summary>
+    AudioFormat Format { get; }
+
+    /// <summary>Gets the earliest sample offset currently available in the buffer.</summary>
+    long EarliestSampleOffset { get; }
+
+    /// <summary>Gets the latest sample offset currently available in the buffer.</summary>
+    long LatestSampleOffset { get; }
+
+    /// <summary>Gets the latest ambient noise snapshot.</summary>
+    AmbientNoiseSnapshot NoiseSnapshot { get; }
+
+    /// <summary>Opens a cursor at an absolute sample offset.</summary>
+    IVoiceAudioCursor OpenCursor(long startSampleOffset);
+}
+
+/// <summary>Opens buffered continuous capture sessions for selected endpoints.</summary>
+public interface IBufferedVoiceCaptureSessionFactory
+{
+    /// <summary>Opens the selected endpoint.</summary>
+    Task<IBufferedVoiceCaptureSession> OpenAsync(string endpointId, CancellationToken cancellationToken);
 }
 
 /// <summary>Represents a typed safe audio capture failure.</summary>

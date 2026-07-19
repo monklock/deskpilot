@@ -46,9 +46,11 @@ public sealed class WhisperCppSpeechToTextProviderTests
             new SpeechRecognitionOptions("ru", 0.70),
             CancellationToken.None);
 
-        await action.Should().ThrowAsync<SpeechRecognitionException>()
+        var assertion = await action.Should().ThrowAsync<SpeechRecognitionException>()
             .Where(exception =>
                 exception.Code == SpeechRecognitionFailureCode.ConfidenceBelowThreshold);
+        assertion.Which.RecognizedText.Should().Be("команда");
+        assertion.Which.RecognitionConfidence.Should().Be(0.69);
         client.DisposeCount.Should().Be(1);
     }
 

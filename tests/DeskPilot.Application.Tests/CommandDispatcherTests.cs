@@ -29,6 +29,7 @@ public sealed class CommandDispatcherTests
         var result = await dispatcher.DispatchAsync(new CommandRequest(CommandId.From("unknown")), CancellationToken.None);
 
         result.Status.Should().Be(CommandExecutionStatus.NotFound);
+        result.ErrorCode.Should().Be("command-not-found");
     }
 
     [Fact]

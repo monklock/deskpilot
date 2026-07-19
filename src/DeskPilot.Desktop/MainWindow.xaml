@@ -158,6 +158,10 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="160" />
@@ -167,6 +171,15 @@
                         <TextBlock Grid.Column="1" Margin="8,0" FontWeight="SemiBold" Text="{Binding Voice.WakePhrase}" />
                         <TextBlock Grid.Row="1" Text="Последняя команда:" />
                         <TextBlock Grid.Row="1" Grid.Column="1" Margin="8,0" TextWrapping="Wrap" Text="{Binding Voice.LastRecognizedText}" />
+                        <TextBlock Grid.Row="2" Margin="0,6,0,0" Text="Результат:" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Margin="8,6,0,0" TextWrapping="Wrap" Text="{Binding Voice.LastCommandOutcome}" />
+                        <TextBlock Grid.Row="3" Margin="0,6,0,0" Text="Захват:" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" Margin="8,6,0,0" Text="{Binding Voice.CaptureStatus}" />
+                        <TextBlock Grid.Row="4" Margin="0,6,0,0" Text="Длительность:" />
+                        <TextBlock Grid.Row="4" Grid.Column="1" Margin="8,6,0,0" Text="{Binding Voice.CapturedDuration}" />
+                        <TextBlock Grid.Row="5" Margin="0,6,0,0" Text="Уровни:" />
+                        <TextBlock Grid.Row="5" Grid.Column="1" Margin="8,6,0,0" TextWrapping="Wrap"
+                                   Text="{Binding Voice.AudioLevelDiagnostics}" />
                     </Grid>
 
                     <Border Margin="0,16,0,0" Padding="12" Background="#F7F9FB" CornerRadius="6">

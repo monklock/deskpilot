@@ -11,7 +11,7 @@ public sealed class SetVolumeCommandHandler(IAudioVolumeService service) : IComm
 
     public async Task<CommandExecutionResult> HandleAsync(CommandRequest request, CancellationToken cancellationToken)
     {
-        if (!TryGetInt(request, "percentage", 0, 100, out var percentage)) return Rejected(request, "Percentage must be between 0 and 100.");
+        if (!TryGetInt(request, "percentage", 0, 100, out var percentage)) return Rejected(request, "audio-invalid-arguments", "Percentage must be between 0 and 100.");
         return ToResult(request, await service.SetVolumeAsync(percentage, cancellationToken));
     }
 }
@@ -22,7 +22,7 @@ public sealed class ChangeVolumeCommandHandler(IAudioVolumeService service) : IC
 
     public async Task<CommandExecutionResult> HandleAsync(CommandRequest request, CancellationToken cancellationToken)
     {
-        if (!TryGetInt(request, "delta", -100, 100, out var delta)) return Rejected(request, "Delta must be between -100 and 100.");
+        if (!TryGetInt(request, "delta", -100, 100, out var delta)) return Rejected(request, "audio-invalid-arguments", "Delta must be between -100 and 100.");
         return ToResult(request, await service.ChangeVolumeAsync(delta, cancellationToken));
     }
 }
@@ -33,7 +33,7 @@ public sealed class SetMuteCommandHandler(IAudioVolumeService service) : IComman
 
     public async Task<CommandExecutionResult> HandleAsync(CommandRequest request, CancellationToken cancellationToken)
     {
-        if (!TryGetBoolean(request, "muted", out var muted)) return Rejected(request, "Muted must be true or false.");
+        if (!TryGetBoolean(request, "muted", out var muted)) return Rejected(request, "audio-invalid-arguments", "Muted must be true or false.");
         return ToResult(request, await service.SetMuteAsync(muted, cancellationToken));
     }
 }
@@ -52,9 +52,9 @@ public sealed class SetDefaultDeviceCommandHandler(IAudioOutputDeviceService ser
 
     public async Task<CommandExecutionResult> HandleAsync(CommandRequest request, CancellationToken cancellationToken)
     {
-        if (!TryGetRequired(request, "endpointId", out var endpointId)) return Rejected(request, "Endpoint ID is required.");
+        if (!TryGetRequired(request, "endpointId", out var endpointId)) return Rejected(request, "audio-invalid-arguments", "Endpoint ID is required.");
         var result = await service.SetDefaultDeviceAsync(new AudioDeviceSwitchRequest(endpointId, AudioDeviceRole.Multimedia), cancellationToken);
-        return result.IsSuccess ? CommandExecutionResult.Succeeded(request.CommandId) : new CommandExecutionResult(request.CommandId, CommandExecutionStatus.Failed, result.Message);
+        return ToResult(request, result);
     }
 }
 
@@ -64,11 +64,95 @@ public sealed class SavePreferredDeviceCommandHandler(IAudioOutputDeviceService 
 
     public async Task<CommandExecutionResult> HandleAsync(CommandRequest request, CancellationToken cancellationToken)
     {
-        if (!TryGetRequired(request, "endpointId", out var endpointId) || !TryGetSlot(request, out var slot)) return Rejected(request, "Endpoint ID and a valid slot are required.");
+        if (!TryGetRequired(request, "endpointId", out var endpointId) || !TryGetSlot(request, out var slot)) return Rejected(request, "audio-invalid-arguments", "Endpoint ID and a valid slot are required.");
         var device = (await outputService.GetDevicesAsync(cancellationToken)).FirstOrDefault(candidate => string.Equals(candidate.EndpointId, endpointId, StringComparison.Ordinal));
-        if (device is null) return Rejected(request, "The audio output device was not found.");
+        if (device is null) return Rejected(request, "audio-endpoint-not-found", "The audio output device was not found.");
         await preferences.SaveAsync(slot, device, cancellationToken);
         return CommandExecutionResult.Succeeded(request.CommandId);
+    }
+}
+
+public sealed class SwitchPreferredDeviceCommandHandler(
+    IAudioOutputDeviceService outputService,
+    IAudioPreferredDeviceService preferences) : ICommandHandler
+{
+    public CommandId CommandId => DeskPilot.Core.Commands.CommandId.From("audio.switch-preferred-device");
+
+    public async Task<CommandExecutionResult> HandleAsync(
+        CommandRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetSlot(request, out var slot))
+        {
+            return Rejected(request, "audio-invalid-arguments", "A valid preferred-device slot is required.");
+        }
+
+        var saved = await preferences.GetAsync(slot, cancellationToken).ConfigureAwait(false);
+        if (saved is null)
+        {
+            return Rejected(request, "audio-preference-missing", "The preferred audio device is not configured.");
+        }
+
+        var devices = await outputService.GetDevicesAsync(cancellationToken).ConfigureAwait(false);
+        var active = devices.FirstOrDefault(device =>
+            device.IsAvailable
+            && string.Equals(device.EndpointId, saved.EndpointId, StringComparison.Ordinal));
+        if (active is null)
+        {
+            return Failed(request, "audio-endpoint-unavailable", "The saved audio device is unavailable.");
+        }
+
+        var result = await outputService.SetDefaultDeviceAsync(
+            new AudioDeviceSwitchRequest(active.EndpointId, AudioDeviceRole.Multimedia),
+            cancellationToken).ConfigureAwait(false);
+        return ToResult(request, result);
+    }
+}
+
+public sealed class TogglePreferredDeviceCommandHandler(
+    IAudioOutputDeviceService outputService,
+    IAudioPreferredDeviceService preferences) : ICommandHandler
+{
+    public CommandId CommandId => DeskPilot.Core.Commands.CommandId.From("audio.toggle-preferred-device");
+
+    public async Task<CommandExecutionResult> HandleAsync(
+        CommandRequest request,
+        CancellationToken cancellationToken)
+    {
+        var speakers = await preferences.GetAsync(AudioDeviceSlot.Speakers, cancellationToken).ConfigureAwait(false);
+        var headphones = await preferences.GetAsync(AudioDeviceSlot.Headphones, cancellationToken).ConfigureAwait(false);
+        if (speakers is null || headphones is null)
+        {
+            return Rejected(request, "audio-preference-missing", "Both preferred audio devices must be configured.");
+        }
+
+        var current = await outputService
+            .GetDefaultDeviceAsync(AudioDeviceRole.Multimedia, cancellationToken)
+            .ConfigureAwait(false);
+        var target = current?.EndpointId switch
+        {
+            var endpoint when string.Equals(endpoint, speakers.EndpointId, StringComparison.Ordinal) => headphones,
+            var endpoint when string.Equals(endpoint, headphones.EndpointId, StringComparison.Ordinal) => speakers,
+            _ => null,
+        };
+        if (target is null)
+        {
+            return Rejected(request, "audio-current-endpoint-not-preferred", "The current device is outside the preferred pair.");
+        }
+
+        var devices = await outputService.GetDevicesAsync(cancellationToken).ConfigureAwait(false);
+        var active = devices.FirstOrDefault(device =>
+            device.IsAvailable
+            && string.Equals(device.EndpointId, target.EndpointId, StringComparison.Ordinal));
+        if (active is null)
+        {
+            return Failed(request, "audio-endpoint-unavailable", "The target audio device is unavailable.");
+        }
+
+        var result = await outputService.SetDefaultDeviceAsync(
+            new AudioDeviceSwitchRequest(active.EndpointId, AudioDeviceRole.Multimedia),
+            cancellationToken).ConfigureAwait(false);
+        return ToResult(request, result);
     }
 }
 
@@ -107,8 +191,31 @@ file static class AudioCommandHandlerSupport
         return text is "Speakers" or "Headphones";
     }
 
-    public static CommandExecutionResult Rejected(CommandRequest request, string message) => new(request.CommandId, CommandExecutionStatus.Rejected, message);
+    public static CommandExecutionResult Rejected(
+        CommandRequest request,
+        string errorCode,
+        string message) =>
+        new(request.CommandId, CommandExecutionStatus.Rejected, message)
+        {
+            ErrorCode = errorCode,
+        };
+
+    public static CommandExecutionResult Failed(
+        CommandRequest request,
+        string errorCode,
+        string message) =>
+        new(request.CommandId, CommandExecutionStatus.Failed, message)
+        {
+            ErrorCode = errorCode,
+        };
 
     public static CommandExecutionResult ToResult(CommandRequest request, AudioOperationResult result) =>
-        result.IsSuccess ? CommandExecutionResult.Succeeded(request.CommandId) : new CommandExecutionResult(request.CommandId, CommandExecutionStatus.Failed, result.Message);
+        result.IsSuccess
+            ? CommandExecutionResult.Succeeded(request.CommandId)
+            : Failed(request, result.ErrorCode ?? "audio-operation-failed", result.Message ?? "The audio operation failed.");
+
+    public static CommandExecutionResult ToResult(CommandRequest request, AudioDeviceSwitchResult result) =>
+        result.IsSuccess
+            ? CommandExecutionResult.Succeeded(request.CommandId)
+            : Failed(request, result.ErrorCode ?? "audio-operation-failed", result.Message ?? "The audio device could not be selected.");
 }

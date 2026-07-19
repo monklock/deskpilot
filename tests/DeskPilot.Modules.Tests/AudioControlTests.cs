@@ -31,6 +31,8 @@ public sealed class AudioControlTests
             typeof(ToggleMuteCommandHandler),
             typeof(SetDefaultDeviceCommandHandler),
             typeof(SavePreferredDeviceCommandHandler),
+            typeof(SwitchPreferredDeviceCommandHandler),
+            typeof(TogglePreferredDeviceCommandHandler),
         ]);
         module.Metadata.SupportedCommands.Select(static command => command.Value).Should().BeEquivalentTo(
         [
@@ -40,7 +42,42 @@ public sealed class AudioControlTests
             "audio.toggle-mute",
             "audio.set-default-device",
             "audio.save-preferred-device",
+            "audio.switch-preferred-device",
+            "audio.toggle-preferred-device",
         ]);
+        services.Should().Contain(descriptor =>
+            descriptor.ServiceType == typeof(ICommandDescriptionProvider)
+            && descriptor.ImplementationType == typeof(AudioCommandDescriptionProvider));
+    }
+
+    [Fact]
+    public void AudioCommandDescriptions_ContainEveryApprovedVoiceIntent()
+    {
+        var descriptions = new AudioCommandDescriptionProvider().GetCommands();
+
+        descriptions.Select(static item => item.CommandId.Value).Should().BeEquivalentTo(
+        [
+            "audio.switch-preferred-device",
+            "audio.toggle-preferred-device",
+            "audio.change-volume",
+            "audio.set-volume",
+            "audio.set-mute",
+            "audio.toggle-mute",
+        ]);
+        descriptions.SelectMany(static item => item.Phrases)
+            .Should().Contain(phrase => phrase.Pattern == "сделай громче"
+                && phrase.Arguments!["delta"] == "10")
+            .And.Contain(phrase => phrase.Pattern == "сделай тише"
+                && phrase.Arguments!["delta"] == "-10")
+            .And.Contain(phrase => phrase.Pattern == "громкость {percentage}")
+            .And.Contain(phrase => phrase.Pattern == "переключи на наушники"
+                && phrase.Arguments!["slot"] == "Headphones")
+            .And.Contain(phrase => phrase.Pattern == "переключи на колонки"
+                && phrase.Arguments!["slot"] == "Speakers")
+            .And.Contain(phrase => phrase.Pattern == "выключи звук"
+                && phrase.Arguments!["muted"] == "true")
+            .And.Contain(phrase => phrase.Pattern == "включи звук"
+                && phrase.Arguments!["muted"] == "false");
     }
 
     [Fact]
@@ -54,6 +91,7 @@ public sealed class AudioControlTests
             CancellationToken.None);
 
         result.Status.Should().Be(CommandExecutionStatus.Rejected);
+        result.ErrorCode.Should().Be("audio-invalid-arguments");
         await service.DidNotReceive().SetVolumeAsync(Arg.Any<int>(), Arg.Any<CancellationToken>());
     }
 
@@ -92,6 +130,7 @@ public sealed class AudioControlTests
         var result = await handler.HandleAsync(Request("audio.change-volume", ("delta", "10")), CancellationToken.None);
 
         result.Status.Should().Be(CommandExecutionStatus.Failed);
+        result.ErrorCode.Should().Be("no-endpoint");
         result.Message.Should().Be("No endpoint.");
     }
 
@@ -208,6 +247,131 @@ public sealed class AudioControlTests
 
         result.Status.Should().Be(CommandExecutionStatus.Succeeded);
         await preferences.Received(1).SaveAsync(AudioDeviceSlot.Headphones, device, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SwitchPreferredDeviceHandler_UsesSavedAvailableEndpoint()
+    {
+        var saved = new AudioOutputDevice("headset", "Headset", false, false);
+        var active = saved with { IsAvailable = true };
+        var output = Substitute.For<IAudioOutputDeviceService>();
+        output.GetDevicesAsync(Arg.Any<CancellationToken>()).Returns([active]);
+        output.SetDefaultDeviceAsync(
+                new AudioDeviceSwitchRequest("headset", AudioDeviceRole.Multimedia),
+                Arg.Any<CancellationToken>())
+            .Returns(new AudioDeviceSwitchResult(true));
+        var preferences = Substitute.For<IAudioPreferredDeviceService>();
+        preferences.GetAsync(AudioDeviceSlot.Headphones, Arg.Any<CancellationToken>())
+            .Returns(saved);
+        var handler = new SwitchPreferredDeviceCommandHandler(output, preferences);
+
+        var result = await handler.HandleAsync(
+            Request("audio.switch-preferred-device", ("slot", "Headphones")),
+            CancellationToken.None);
+
+        result.Status.Should().Be(CommandExecutionStatus.Succeeded);
+        await output.Received(1).SetDefaultDeviceAsync(
+            new AudioDeviceSwitchRequest("headset", AudioDeviceRole.Multimedia),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SwitchPreferredDeviceHandler_MissingPreferenceIsRejected()
+    {
+        var output = Substitute.For<IAudioOutputDeviceService>();
+        var preferences = Substitute.For<IAudioPreferredDeviceService>();
+        var handler = new SwitchPreferredDeviceCommandHandler(output, preferences);
+
+        var result = await handler.HandleAsync(
+            Request("audio.switch-preferred-device", ("slot", "Headphones")),
+            CancellationToken.None);
+
+        result.Status.Should().Be(CommandExecutionStatus.Rejected);
+        result.ErrorCode.Should().Be("audio-preference-missing");
+        await output.DidNotReceive().SetDefaultDeviceAsync(
+            Arg.Any<AudioDeviceSwitchRequest>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SwitchPreferredDeviceHandler_DisconnectedEndpointFailsWithoutFallback()
+    {
+        var saved = new AudioOutputDevice("headset", "Headset", false, false);
+        var unrelated = new AudioOutputDevice("speakers", "Speakers", true, true);
+        var output = Substitute.For<IAudioOutputDeviceService>();
+        output.GetDevicesAsync(Arg.Any<CancellationToken>()).Returns([unrelated]);
+        var preferences = Substitute.For<IAudioPreferredDeviceService>();
+        preferences.GetAsync(AudioDeviceSlot.Headphones, Arg.Any<CancellationToken>())
+            .Returns(saved);
+        var handler = new SwitchPreferredDeviceCommandHandler(output, preferences);
+
+        var result = await handler.HandleAsync(
+            Request("audio.switch-preferred-device", ("slot", "Headphones")),
+            CancellationToken.None);
+
+        result.Status.Should().Be(CommandExecutionStatus.Failed);
+        result.ErrorCode.Should().Be("audio-endpoint-unavailable");
+        await output.DidNotReceive().SetDefaultDeviceAsync(
+            Arg.Any<AudioDeviceSwitchRequest>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TogglePreferredDeviceHandler_SwitchesFromSpeakersToHeadphones()
+    {
+        var speakers = new AudioOutputDevice("speakers", "Speakers", true, true);
+        var headphones = new AudioOutputDevice("headphones", "Headphones", true, false);
+        var output = Substitute.For<IAudioOutputDeviceService>();
+        output.GetDevicesAsync(Arg.Any<CancellationToken>()).Returns([speakers, headphones]);
+        output.GetDefaultDeviceAsync(AudioDeviceRole.Multimedia, Arg.Any<CancellationToken>())
+            .Returns(speakers);
+        output.SetDefaultDeviceAsync(
+                new AudioDeviceSwitchRequest("headphones", AudioDeviceRole.Multimedia),
+                Arg.Any<CancellationToken>())
+            .Returns(new AudioDeviceSwitchResult(true));
+        var preferences = Substitute.For<IAudioPreferredDeviceService>();
+        preferences.GetAsync(AudioDeviceSlot.Speakers, Arg.Any<CancellationToken>())
+            .Returns(speakers);
+        preferences.GetAsync(AudioDeviceSlot.Headphones, Arg.Any<CancellationToken>())
+            .Returns(headphones);
+        var handler = new TogglePreferredDeviceCommandHandler(output, preferences);
+
+        var result = await handler.HandleAsync(
+            Request("audio.toggle-preferred-device"),
+            CancellationToken.None);
+
+        result.Status.Should().Be(CommandExecutionStatus.Succeeded);
+        await output.Received(1).SetDefaultDeviceAsync(
+            new AudioDeviceSwitchRequest("headphones", AudioDeviceRole.Multimedia),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TogglePreferredDeviceHandler_CurrentEndpointOutsideSavedPairIsRejected()
+    {
+        var speakers = new AudioOutputDevice("speakers", "Speakers", true, false);
+        var headphones = new AudioOutputDevice("headphones", "Headphones", true, false);
+        var current = new AudioOutputDevice("monitor", "Monitor", true, true);
+        var output = Substitute.For<IAudioOutputDeviceService>();
+        output.GetDevicesAsync(Arg.Any<CancellationToken>()).Returns([speakers, headphones, current]);
+        output.GetDefaultDeviceAsync(AudioDeviceRole.Multimedia, Arg.Any<CancellationToken>())
+            .Returns(current);
+        var preferences = Substitute.For<IAudioPreferredDeviceService>();
+        preferences.GetAsync(AudioDeviceSlot.Speakers, Arg.Any<CancellationToken>())
+            .Returns(speakers);
+        preferences.GetAsync(AudioDeviceSlot.Headphones, Arg.Any<CancellationToken>())
+            .Returns(headphones);
+        var handler = new TogglePreferredDeviceCommandHandler(output, preferences);
+
+        var result = await handler.HandleAsync(
+            Request("audio.toggle-preferred-device"),
+            CancellationToken.None);
+
+        result.Status.Should().Be(CommandExecutionStatus.Rejected);
+        result.ErrorCode.Should().Be("audio-current-endpoint-not-preferred");
+        await output.DidNotReceive().SetDefaultDeviceAsync(
+            Arg.Any<AudioDeviceSwitchRequest>(),
+            Arg.Any<CancellationToken>());
     }
 
     private static CommandRequest Request(string commandId, params (string Key, string Value)[] arguments) =>

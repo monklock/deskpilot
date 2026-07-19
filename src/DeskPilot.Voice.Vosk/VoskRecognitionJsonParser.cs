@@ -18,10 +18,12 @@ internal static class VoskRecognitionJsonParser
                     ? textElement.GetString() ?? string.Empty
                     : string.Empty;
 
+            var words = isFinal ? ReadWords(root) : [];
             return new VoskRecognition(
                 text,
-                isFinal ? ReadMinimumConfidence(root) : 0,
-                isFinal);
+                words.Count > 0 ? words.Min(word => word.Confidence) : 0,
+                isFinal,
+                words);
         }
         catch (Exception exception) when (
             exception is JsonException or InvalidOperationException)
@@ -32,29 +34,60 @@ internal static class VoskRecognitionJsonParser
         }
     }
 
-    private static double ReadMinimumConfidence(JsonElement root)
+    private static IReadOnlyList<VoskWordTiming> ReadWords(JsonElement root)
     {
         if (!root.TryGetProperty("result", out var results)
             || results.ValueKind != JsonValueKind.Array
             || results.GetArrayLength() == 0)
         {
-            return 0;
+            return [];
         }
 
-        var minimum = double.MaxValue;
+        var words = new List<VoskWordTiming>(results.GetArrayLength());
+        double? previousEnd = null;
         foreach (var result in results.EnumerateArray())
         {
-            if (!result.TryGetProperty("conf", out var confidenceElement)
+            if (result.ValueKind != JsonValueKind.Object
+                || !result.TryGetProperty("word", out var wordElement)
+                || wordElement.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(wordElement.GetString())
+                || !result.TryGetProperty("conf", out var confidenceElement)
                 || !confidenceElement.TryGetDouble(out var confidence)
                 || !double.IsFinite(confidence)
-                || confidence is < 0 or > 1)
+                || confidence is < 0 or > 1
+                || !result.TryGetProperty("start", out var startElement)
+                || !startElement.TryGetDouble(out var startSeconds)
+                || !double.IsFinite(startSeconds)
+                || startSeconds < 0
+                || !result.TryGetProperty("end", out var endElement)
+                || !endElement.TryGetDouble(out var endSeconds)
+                || !double.IsFinite(endSeconds)
+                || endSeconds < 0
+                || startSeconds >= endSeconds
+                || previousEnd is double precedingEnd && startSeconds < precedingEnd
+                || !TryCreateTimeSpan(startSeconds, out var start)
+                || !TryCreateTimeSpan(endSeconds, out var end)
+                || start >= end)
             {
-                return 0;
+                return [];
             }
 
-            minimum = Math.Min(minimum, confidence);
+            words.Add(new VoskWordTiming(wordElement.GetString()!, confidence, start, end));
+            previousEnd = endSeconds;
         }
 
-        return minimum;
+        return words;
+    }
+
+    private static bool TryCreateTimeSpan(double seconds, out TimeSpan result)
+    {
+        if (seconds > TimeSpan.MaxValue.TotalSeconds)
+        {
+            result = default;
+            return false;
+        }
+
+        result = TimeSpan.FromSeconds(seconds);
+        return true;
     }
 }
