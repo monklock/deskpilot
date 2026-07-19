@@ -106,11 +106,13 @@ public sealed class AdaptiveVoiceActivityDetector
 
                     if (analysisLength == AnalysisFrameBytes)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         completed = ProcessAnalysisFrame(
                             analysisBuffer.AsSpan(0, AnalysisFrameBytes),
                             commandBuffer,
                             state,
                             progress);
+                        cancellationToken.ThrowIfCancellationRequested();
                         analysisLength = 0;
                     }
                 }
@@ -149,7 +151,6 @@ public sealed class AdaptiveVoiceActivityDetector
         Action<VoiceActivityProgress> progress)
     {
         var frameStartOffset = AddOffset(state.CursorStartSampleOffset, state.TotalObservedSamples);
-        var frameEndOffset = AddOffset(frameStartOffset, AnalysisFrameSamples);
         state.TotalObservedSamples = checked(state.TotalObservedSamples + AnalysisFrameSamples);
         var rms = PcmRms.Calculate(frame);
         state.PeakRms = Math.Max(state.PeakRms, rms);
@@ -172,7 +173,7 @@ public sealed class AdaptiveVoiceActivityDetector
 
                 if (state.CandidateSpeechSamples >= state.MinimumSpeechSamples)
                 {
-                    ConfirmSpeech(commandBuffer, state, frameEndOffset);
+                    ConfirmSpeech(commandBuffer, state);
                     progress(new VoiceActivityProgress(
                         state.SpeechStartSampleOffset!.Value,
                         state.AdaptiveNoiseFloor,
@@ -182,8 +183,7 @@ public sealed class AdaptiveVoiceActivityDetector
             }
             else
             {
-                state.AdaptiveNoiseFloor =
-                    (0.95 * state.AdaptiveNoiseFloor) + (0.05 * rms);
+                state.AdaptiveNoiseFloor = UpdateNoiseFloor(state.AdaptiveNoiseFloor, rms);
                 if (state.CandidateLength > 0)
                 {
                     AppendPreRoll(
@@ -232,12 +232,14 @@ public sealed class AdaptiveVoiceActivityDetector
 
     private static void ConfirmSpeech(
         byte[] commandBuffer,
-        CaptureState state,
-        long frameEndOffset)
+        CaptureState state)
     {
+        var copiedCandidateLength = Math.Min(
+            state.CandidateLength,
+            state.MaximumCommandBytes);
         var retainedPreRollLength = Math.Min(
             state.PreRollLength,
-            state.MaximumCommandBytes - state.CandidateLength);
+            state.MaximumCommandBytes - copiedCandidateLength);
         if (retainedPreRollLength < state.PreRollLength)
         {
             commandBuffer.AsSpan(
@@ -247,12 +249,14 @@ public sealed class AdaptiveVoiceActivityDetector
 
         commandBuffer.AsSpan(
             state.MaximumCommandBytes,
-            state.CandidateLength).CopyTo(
-                commandBuffer.AsSpan(retainedPreRollLength, state.CandidateLength));
-        state.CommandLength = retainedPreRollLength + state.CandidateLength;
+            copiedCandidateLength).CopyTo(
+                commandBuffer.AsSpan(retainedPreRollLength, copiedCandidateLength));
+        state.CommandLength = retainedPreRollLength + copiedCandidateLength;
         state.SpeechConfirmed = true;
         state.SpeechStartSampleOffset = state.CandidateStartSampleOffset;
-        state.SpeechEndSampleOffset = frameEndOffset;
+        state.SpeechEndSampleOffset = AddOffset(
+            state.CandidateStartSampleOffset!.Value,
+            copiedCandidateLength / BytesPerSample);
         state.PreRollLength = 0;
         state.CandidateLength = 0;
         state.CandidateSpeechSamples = 0;
@@ -321,7 +325,7 @@ public sealed class AdaptiveVoiceActivityDetector
         };
     }
 
-    private static (double Start, double Continue) MapThresholds(
+    internal static (double Start, double Continue) MapThresholds(
         double sensitivity,
         double noiseFloor)
     {
@@ -333,6 +337,9 @@ public sealed class AdaptiveVoiceActivityDetector
             Math.Max(AbsoluteStartFloor, noiseFloor * startMultiplier),
             Math.Max(AbsoluteContinueFloor, noiseFloor * continueMultiplier));
     }
+
+    internal static double UpdateNoiseFloor(double noiseFloor, double rms) =>
+        (0.95 * noiseFloor) + (0.05 * rms);
 
     private static void Validate(
         IVoiceAudioCursor cursor,

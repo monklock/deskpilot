@@ -198,6 +198,42 @@ public sealed class AdaptiveVoiceActivityDetectorTests
     }
 
     [Fact]
+    public async Task CaptureAsync_MaximumShorterThanRoundedCandidate_CapsCandidateExactly()
+    {
+        const long startSampleOffset = 90_000;
+        await using var cursor = TestCursor.FromPcm(
+            startSampleOffset,
+            TestPcm.Speech(160, 0.20));
+        var options = new VoiceActivityOptions(
+            TimeSpan.FromMilliseconds(150),
+            TimeSpan.FromMilliseconds(20),
+            TimeSpan.FromMilliseconds(159),
+            0.80)
+        {
+            PreRollDuration = TimeSpan.FromMilliseconds(20),
+            InitialSilenceTimeout = TimeSpan.FromMilliseconds(159),
+        };
+        var progress = new List<VoiceActivityProgress>();
+
+        var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
+            cursor,
+            Ambient,
+            options,
+            progress.Add,
+            CancellationToken.None);
+
+        result.SpeechDetected.Should().BeTrue();
+        result.Audio!.Pcm16.Length.Should().Be(5_088);
+        result.Audio.Duration.Should().Be(TimeSpan.FromMilliseconds(159));
+        result.Duration.Should().Be(TimeSpan.FromMilliseconds(159));
+        result.Diagnostics.ObservedDuration.Should().Be(TimeSpan.FromMilliseconds(160));
+        result.Diagnostics.CapturedDuration.Should().Be(TimeSpan.FromMilliseconds(159));
+        result.Diagnostics.SpeechStartSampleOffset.Should().Be(startSampleOffset);
+        result.Diagnostics.SpeechEndSampleOffset.Should().Be(startSampleOffset + 2_544);
+        progress.Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task CaptureAsync_FortyMillisecondSpike_DoesNotConfirmSpeech()
     {
         await using var cursor = TestCursor.FromPcm(
@@ -324,20 +360,24 @@ public sealed class AdaptiveVoiceActivityDetectorTests
             .Where(exception => exception.Code == AudioInputResultCode.UnsupportedFormat);
     }
 
-    [Theory]
-    [InlineData(320, 960)]
-    [InlineData(320, 320)]
-    [InlineData(640, 640)]
-    public async Task CaptureAsync_InvalidSourceOffsets_ThrowUnsupportedFormat(
-        long secondStart,
-        long secondEnd)
+    [Fact]
+    public async Task CaptureAsync_CoherentGap_ThrowsUnsupportedFormat()
     {
-        var frames = new[]
-        {
+        await AssertInvalidSequenceAsync(secondStart: 640, secondEnd: 960);
+    }
+
+    [Fact]
+    public async Task CaptureAsync_CoherentOverlap_ThrowsUnsupportedFormat()
+    {
+        await AssertInvalidSequenceAsync(secondStart: 160, secondEnd: 480);
+    }
+
+    private static async Task AssertInvalidSequenceAsync(long secondStart, long secondEnd)
+    {
+        await using var cursor = TestCursor.WithFrames(
+            0,
             TestCursor.Frame(0, 320, TestPcm.Silence(20, 0)),
-            TestCursor.Frame(secondStart, secondEnd, TestPcm.Silence(20, 0)),
-        };
-        await using var cursor = TestCursor.WithFrames(0, frames);
+            TestCursor.Frame(secondStart, secondEnd, TestPcm.Silence(20, 0)));
 
         var action = () => new AdaptiveVoiceActivityDetector().CaptureAsync(
             cursor,
@@ -348,6 +388,82 @@ public sealed class AdaptiveVoiceActivityDetectorTests
 
         await action.Should().ThrowAsync<AudioCaptureException>()
             .Where(exception => exception.Code == AudioInputResultCode.UnsupportedFormat);
+    }
+
+    [Fact]
+    public async Task CaptureAsync_CandidateInFlightAtInitialSilenceBoundary_ReturnsNoSpeech()
+    {
+        await using var cursor = TestCursor.FromPcm(
+            30_000,
+            TestPcm.Concat(
+                TestPcm.Silence(3_860, 0.01),
+                TestPcm.Speech(140, 0.20),
+                TestPcm.Speech(160, 0.20)));
+        var progress = new List<VoiceActivityProgress>();
+
+        var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
+            cursor,
+            Ambient,
+            VoiceActivityOptions.ContinuousDefault,
+            progress.Add,
+            CancellationToken.None);
+
+        result.SpeechDetected.Should().BeFalse();
+        result.Duration.Should().Be(TimeSpan.FromSeconds(4));
+        result.Diagnostics.ObservedDuration.Should().Be(TimeSpan.FromSeconds(4));
+        result.Diagnostics.SpeechStartSampleOffset.Should().BeNull();
+        progress.Should().BeEmpty();
+        cursor.ReadFrameCount.Should().Be(200);
+    }
+
+    [Fact]
+    public async Task CaptureAsync_SuccessProgressPayloadIsExactAndSynchronousOnce()
+    {
+        const long startSampleOffset = 123_456;
+        await using var cursor = TestCursor.FromPcm(
+            startSampleOffset,
+            TestPcm.Concat(TestPcm.Speech(160, 0.20), TestPcm.Silence(1_200, 0)));
+        var progress = new List<VoiceActivityProgress>();
+
+        var result = await new AdaptiveVoiceActivityDetector().CaptureAsync(
+            cursor,
+            Ambient,
+            VoiceActivityOptions.ContinuousDefault,
+            value =>
+            {
+                cursor.ReadFrameCount.Should().Be(8);
+                progress.Add(value);
+            },
+            CancellationToken.None);
+
+        var expectedPeak = Math.Round(short.MaxValue * 0.20) / 32_768d;
+        progress.Should().ContainSingle().Which.Should().Be(
+            new VoiceActivityProgress(startSampleOffset, 0.01, expectedPeak));
+        result.Diagnostics.SpeechStartSampleOffset.Should().Be(startSampleOffset);
+    }
+
+    [Theory]
+    [InlineData(0.65, 0.020, 0.070, 0.044)]
+    [InlineData(0.775, 0.020, 0.057, 0.036)]
+    [InlineData(0.90, 0.020, 0.044, 0.028)]
+    [InlineData(0.65, 0.001, 0.012, 0.008)]
+    public void MapThresholds_UsesExactMultipliersAndAbsoluteFloors(
+        double sensitivity,
+        double noiseFloor,
+        double expectedStart,
+        double expectedContinue)
+    {
+        var thresholds = AdaptiveVoiceActivityDetector.MapThresholds(sensitivity, noiseFloor);
+
+        thresholds.Start.Should().BeApproximately(expectedStart, 1e-12);
+        thresholds.Continue.Should().BeApproximately(expectedContinue, 1e-12);
+    }
+
+    [Fact]
+    public void UpdateNoiseFloor_UsesExactNinetyFiveFiveWeighting()
+    {
+        AdaptiveVoiceActivityDetector.UpdateNoiseFloor(0.04, 0.02)
+            .Should().BeApproximately(0.039, 1e-12);
     }
 
     [Fact]
@@ -504,7 +620,7 @@ public sealed class AdaptiveVoiceActivityDetectorTests
     {
         var pool = new RecordingArrayPool(641, 340_000);
         await using var cursor = TestCursor.UntilCancelled(70_000);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var cancellation = new CancellationTokenSource();
         var detector = new AdaptiveVoiceActivityDetector(pool);
         var progress = new List<VoiceActivityProgress>();
         var capture = detector.CaptureAsync(
@@ -522,6 +638,36 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         pool.AssertAllReturnedAndCleared();
         cursor.DisposeCount.Should().Be(0);
         progress.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task CaptureAsync_CancellationFromProgressInsideLargeChunk_StopsBeforeNextFrame()
+    {
+        var pool = new RecordingArrayPool(777, 340_000);
+        await using var cursor = TestCursor.FromPcm(
+            18_000,
+            TestPcm.Concat(TestPcm.Speech(400, 0.20), TestPcm.Silence(1_200, 0)),
+            chunkSize: Samples(1_600) * sizeof(short));
+        using var cancellation = new CancellationTokenSource();
+        var detector = new AdaptiveVoiceActivityDetector(pool);
+        var progressCount = 0;
+
+        var action = () => detector.CaptureAsync(
+            cursor,
+            Ambient,
+            VoiceActivityOptions.ContinuousDefault,
+            _ =>
+            {
+                progressCount++;
+                cancellation.Cancel();
+            },
+            cancellation.Token);
+
+        await action.Should().ThrowAsync<OperationCanceledException>();
+        progressCount.Should().Be(1);
+        cursor.ReadFrameCount.Should().Be(1);
+        pool.AssertAllReturnedAndCleared();
+        cursor.DisposeCount.Should().Be(0);
     }
 
     [Fact]
@@ -566,6 +712,30 @@ public sealed class AdaptiveVoiceActivityDetectorTests
         pool.AssertAllReturnedAndCleared();
         cursor.DisposeCount.Should().Be(0);
         progress.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task CaptureAsync_SourceValidationFailureClearsOversizedPoolArrays()
+    {
+        var pool = new RecordingArrayPool(731, 340_000);
+        await using var cursor = TestCursor.FromRawFrame(
+            0,
+            TestPcm.Silence(20, 0),
+            320,
+            TimeSpan.FromMilliseconds(19));
+        var detector = new AdaptiveVoiceActivityDetector(pool);
+
+        var action = () => detector.CaptureAsync(
+            cursor,
+            Ambient,
+            VoiceActivityOptions.ContinuousDefault,
+            _ => { },
+            CancellationToken.None);
+
+        await action.Should().ThrowAsync<AudioCaptureException>()
+            .Where(exception => exception.Code == AudioInputResultCode.UnsupportedFormat);
+        pool.AssertAllReturnedAndCleared();
+        cursor.DisposeCount.Should().Be(0);
     }
 
     [Fact]
