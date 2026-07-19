@@ -1,8 +1,10 @@
 # DeskPilot
 
-DeskPilot is a local Windows 10/11 voice assistant for fast desktop commands.
+DeskPilot is a local Windows 10/11 voice assistant for deterministic desktop commands.
 
-The current release establishes the solution architecture, local persistence, WPF shell, system tray, and extension contracts. Audio capture, speech recognition, device control, and application execution are intentionally deferred to later milestones.
+The current development version implements manual and voice-controlled Windows audio: offline wake word and Russian speech recognition, saved speakers/headphones switching, volume and mute commands, safe WPF feedback, local persistence, model management, and a modular command-dispatch boundary. Application launching and command groups remain planned for Milestone 4.
+
+Supported Russian audio phrases and matching rules are documented in [docs/voice-commands.md](docs/voice-commands.md).
 
 ## Requirements
 
@@ -12,9 +14,9 @@ The current release establishes the solution architecture, local persistence, WP
 ## Build
 
 ```powershell
-dotnet restore
-dotnet build --configuration Release
-dotnet test --configuration Release
+dotnet restore .\DeskPilot.sln
+dotnet build .\DeskPilot.sln --configuration Release --no-restore
+dotnet test .\DeskPilot.sln --configuration Release --no-build --no-restore
 ```
 
 ## Runtime data

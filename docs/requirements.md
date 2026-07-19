@@ -2,7 +2,7 @@
 
 DeskPilot targets Windows 10/11 x64 and uses C# with .NET 10, WPF, MVVM, SQLite, Entity Framework Core, Generic Host, dependency injection, and structured logging.
 
-The wake phrase is `альфа`. The local Vosk provider listens only for this limited grammar. After activation, DeskPilot captures one bounded command, detects the end of speech, and recognizes Russian text locally with Whisper. Milestone 2 publishes that text to the desktop UI but never resolves or dispatches it as a command.
+The wake phrase is `альфа`. The local Vosk provider listens only for this limited grammar. After activation, DeskPilot captures one bounded command, detects the end of speech, recognizes Russian text locally with Whisper, resolves it against a finite module-owned catalog, and dispatches only the trusted typed request.
 
 Task 0.1 excludes audio capture, speech recognition implementations, Windows audio control, application launching, command groups, shutdown, network APIs, and installers.
 
@@ -28,3 +28,15 @@ Task 0.1 excludes audio capture, speech recognition implementations, Windows aud
 - Keep command audio in memory only. Do not persist, transmit, or log audio or rejected ambient speech.
 - Expose safe state, model, download, and recovery diagnostics without credentials or personal absolute paths.
 - Do not resolve intents or dispatch recognized text until Milestone 3.
+
+## Milestone 3 — Voice-controlled Audio MVP
+
+- Publish a finite Russian phrase catalog only for registered audio handlers.
+- Normalize locally and resolve exact phrases before a bounded fuzzy fallback with threshold `0.86` and ambiguity margin `0.08`.
+- Parse digit and Russian-cardinal volume values only in the inclusive `0..100` range; fuzzy matching must never guess or repair a percentage.
+- Change volume by exactly ten percentage points, set explicit volume, mute, unmute, and toggle mute through `ICommandDispatcher`.
+- Switch only to explicitly saved and currently available speakers or headphones. Never substitute another endpoint.
+- Reject toggle-device commands when the current endpoint is outside the saved pair.
+- Execute nothing for unknown or ambiguous phrases and recover to wake listening after safe failure feedback.
+- Expose only safe command ID, resolution status/confidence, execution status, and stable error code to WPF.
+- Do not log recognized text, command arguments, endpoint IDs, native paths, audio, or raw handler messages.

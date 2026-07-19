@@ -2,7 +2,7 @@
 
 DeskPilot is an extensible modular monolith. `DeskPilot.Core` contains domain contracts and has no dependency on WPF, SQLite, Windows APIs, or speech providers. `DeskPilot.Application` dispatches only registered commands. `DeskPilot.Infrastructure` implements local paths and SQLite persistence. `DeskPilot.Desktop` is the WPF composition root.
 
-Modules register statically through dependency injection and do not call each other directly. The desktop UI and future control surfaces use `ICommandDispatcher`. The Milestone 2 voice pipeline deliberately stops before that boundary and publishes recognized text only through its state store.
+Modules register statically through dependency injection and do not call each other directly. The desktop UI and voice control surface use `ICommandDispatcher`. Voice input reaches that boundary only after a module-owned description is validated and a local resolver creates a trusted typed request.
 
 SQLite is stored at `%LOCALAPPDATA%\DeskPilot\data\deskpilot.db`. It contains application and voice settings plus the Milestone 1 preferred-audio-endpoint records.
 
@@ -16,10 +16,23 @@ If native endpoint switching is unsupported, the application returns a typed fai
 
 ## Offline Voice Pipeline
 
-`DeskPilot.Voice.Abstractions` owns provider-neutral settings, capture, wake detection, voice activity, recognition, signal, and model-management contracts. Windows capture and native Vosk/Whisper adapters stay behind those contracts. `DeskPilot.Application` owns the single `VoicePipelineCoordinator` and observable `VoicePipelineStateStore`; neither references WPF, NAudio, Vosk, Whisper, native paths, or command dispatch.
+`DeskPilot.Voice.Abstractions` owns provider-neutral settings, capture, wake detection, voice activity, recognition, signal, and model-management contracts. Windows capture and native Vosk/Whisper adapters stay behind those contracts. `DeskPilot.Application` owns the single `VoicePipelineCoordinator`, observable `VoicePipelineStateStore`, command catalog, intent resolvers, and resolve-to-dispatch service; it references abstractions rather than WPF, NAudio, Vosk, Whisper, or native paths.
 
 The coordinator owns one run task and cancellation source. It resolves the persisted endpoint and healthy active models, opens separate wake and command capture sessions, disposes command capture before native recognition, and serializes microphone changes and model activation. An activation lease stops the pipeline while the model repository atomically switches versions, then resumes voice mode when safe.
 
 The WPF `VoiceControlViewModel` exposes asynchronous, non-reentrant controls for voice mode, endpoint selection, sensitivity, recognized text, model updates, cancellation, activation, and built-in restoration. A disconnected saved Bluetooth microphone remains visible and no default-device fallback occurs. Windows performs pairing and reconnection; DeskPilot resumes only when the same stable endpoint ID returns.
+
+## Trusted Voice Commands
+
+Each module owns an `ICommandDescriptionProvider`. At composition time, `CommandCatalog` rejects duplicate command IDs, duplicate normalized phrases, unsupported placeholders, and descriptions without a registered handler. Runtime flow is:
+
+```text
+module descriptions → CommandCatalog → exact resolver → bounded fuzzy resolver
+→ VoiceCommandExecutionService → ICommandDispatcher → AudioControlModule
+```
+
+Exact matching precedes fuzzy matching. The fuzzy threshold is `0.86`, the ambiguity margin is `0.08`, and numeric percentages remain strict. Unknown or ambiguous input never reaches the dispatcher. Preferred-device handlers use only the saved endpoint requested by the trusted phrase and never fall back to another output.
+
+The state store exposes display-safe command ID, intent status/confidence, execution status, stable error code, and fixed safe message. It never exposes handler details or command arguments. Structured logs omit recognized text, endpoint IDs, raw arguments, model paths, credentials, and audio.
 
 Release preparation injects verified Vosk small Russian and multilingual Whisper base files into publish output. It signs both the seed manifest and remote optional-model catalog. Startup verifies the seed signature before parsing metadata, then installs immutable versions under `%LOCALAPPDATA%\DeskPilot\models`; optional larger models require the signed GitHub release catalog and an explicit user action. The ECDSA signing private key is external to the repository and release output.
