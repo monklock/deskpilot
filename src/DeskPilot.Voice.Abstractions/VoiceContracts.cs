@@ -108,7 +108,7 @@ public interface IVoiceSignalService
 }
 
 /// <summary>Configures speech end detection.</summary>
-public sealed record VoiceActivityOptions(
+public sealed partial record VoiceActivityOptions(
     TimeSpan MinimumSpeechDuration,
     TimeSpan SilenceTimeout,
     TimeSpan MaximumCommandDuration,
@@ -120,13 +120,86 @@ public sealed record VoiceActivityOptions(
         TimeSpan.FromMilliseconds(900),
         TimeSpan.FromSeconds(10),
         0.80);
+
+    /// <summary>Gets the duration of audio retained before the detected speech.</summary>
+    public TimeSpan PreRollDuration { get; init; }
+
+    /// <summary>Gets the maximum wait before speech starts.</summary>
+    public TimeSpan InitialSilenceTimeout { get; init; }
+
+    /// <summary>Gets the maximum silence duration after speech ends.</summary>
+    public TimeSpan EndSilenceTimeout => SilenceTimeout;
+
+    /// <summary>Gets the approved continuous voice endpointing configuration.</summary>
+    public static VoiceActivityOptions ContinuousDefault { get; } = new(
+        TimeSpan.FromMilliseconds(150),
+        TimeSpan.FromMilliseconds(1_200),
+        TimeSpan.FromSeconds(10),
+        0.80)
+    {
+        PreRollDuration = TimeSpan.FromMilliseconds(300),
+        InitialSilenceTimeout = TimeSpan.FromSeconds(4),
+    };
+}
+
+/// <summary>Describes in-progress voice activity metrics.</summary>
+public sealed record VoiceActivityProgress(
+    long SpeechStartSampleOffset,
+    double NoiseFloorRms,
+    double PeakRms);
+
+/// <summary>Describes diagnostics captured during voice activity detection.</summary>
+public sealed record VoiceActivityDiagnostics(
+    TimeSpan ObservedDuration,
+    TimeSpan CapturedDuration,
+    long? SpeechStartSampleOffset,
+    long? SpeechEndSampleOffset,
+    double NoiseFloorRms,
+    double PeakRms)
+{
+    /// <summary>Gets an empty diagnostics snapshot.</summary>
+    public static VoiceActivityDiagnostics Empty { get; } = new(
+        TimeSpan.Zero,
+        TimeSpan.Zero,
+        null,
+        null,
+        0,
+        0);
 }
 
 /// <summary>Contains a voice activity detection result.</summary>
-public sealed record VoiceActivityResult(
+public sealed partial record VoiceActivityResult(
     bool SpeechDetected,
     TimeSpan Duration,
-    CapturedCommandAudio? Audio);
+    CapturedCommandAudio? Audio)
+{
+    /// <summary>Gets diagnostics captured during voice activity detection.</summary>
+    public VoiceActivityDiagnostics Diagnostics { get; init; } = VoiceActivityDiagnostics.Empty;
+}
 
 /// <summary>Contains a wake phrase detection result.</summary>
-public sealed record WakeWordDetectionResult(string Phrase, double Confidence);
+public sealed partial record WakeWordDetectionResult(string Phrase, double Confidence)
+{
+    /// <summary>Gets the absolute sample offset where the wake phrase starts.</summary>
+    public long? WakeStartSampleOffset { get; init; }
+
+    /// <summary>Gets the absolute sample offset where the wake phrase ends.</summary>
+    public long? WakeEndSampleOffset { get; init; }
+
+    /// <summary>Gets the absolute sample offset where detection completed.</summary>
+    public long? DetectionSampleOffset { get; init; }
+
+    /// <summary>Creates a wake phrase detection result with absolute sample offsets.</summary>
+    public WakeWordDetectionResult(
+        string phrase,
+        double confidence,
+        long wakeStartSampleOffset,
+        long wakeEndSampleOffset,
+        long detectionSampleOffset)
+        : this(phrase, confidence)
+    {
+        WakeStartSampleOffset = wakeStartSampleOffset;
+        WakeEndSampleOffset = wakeEndSampleOffset;
+        DetectionSampleOffset = detectionSampleOffset;
+    }
+}
