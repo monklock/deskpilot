@@ -1,7 +1,25 @@
 namespace DeskPilot.Voice.Vosk;
 
+/// <summary>Contains validated timing for one final Vosk word.</summary>
+public sealed record VoskWordTiming(
+    string Word,
+    double Confidence,
+    TimeSpan Start,
+    TimeSpan End);
+
 /// <summary>Contains one native Vosk recognition update.</summary>
-public sealed record VoskRecognition(string Text, double Confidence, bool IsFinal);
+public sealed record VoskRecognition(
+    string Text,
+    double Confidence,
+    bool IsFinal,
+    IReadOnlyList<VoskWordTiming> Words)
+{
+    /// <summary>Creates a recognition update without final word timing.</summary>
+    public VoskRecognition(string text, double confidence, bool isFinal)
+        : this(text, confidence, isFinal, [])
+    {
+    }
+}
 
 /// <summary>Feeds normalized PCM16 audio into one native Vosk recognizer.</summary>
 public interface IVoskRecognizerClient : IDisposable

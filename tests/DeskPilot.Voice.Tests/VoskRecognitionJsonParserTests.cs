@@ -14,15 +14,37 @@ public sealed class VoskRecognitionJsonParserTests
             {
               "text": "альфа",
               "result": [
-                { "conf": 0.94, "word": "альфа" },
-                { "conf": 0.82, "word": "альфа" }
+                { "conf": 0.94, "start": 0.10, "end": 0.40, "word": "аль" },
+                { "conf": 0.82, "start": 0.40, "end": 0.80, "word": "фа" }
               ]
             }
             """;
 
         var result = VoskRecognitionJsonParser.Parse(json, isFinal: true);
 
-        result.Should().Be(new VoskRecognition("альфа", 0.82, true));
+        result.Confidence.Should().Be(0.82);
+    }
+
+    [Fact]
+    public void Parse_FinalResult_ParsesValidatedWordTiming()
+    {
+        const string json = """
+            {
+              "text": "альфа",
+              "result": [
+                { "conf": 0.94, "start": 0.50, "end": 1.10, "word": "альфа" }
+              ]
+            }
+            """;
+
+        var result = VoskRecognitionJsonParser.Parse(json, isFinal: true);
+
+        result.Words.Should().ContainSingle().Which.Should().Be(
+            new VoskWordTiming(
+                "альфа",
+                0.94,
+                TimeSpan.FromSeconds(0.50),
+                TimeSpan.FromSeconds(1.10)));
     }
 
     [Theory]
@@ -36,6 +58,36 @@ public sealed class VoskRecognitionJsonParserTests
         result.Should().Be(new VoskRecognition("альфа", 0, true));
     }
 
+    public static TheoryData<string> InvalidTimedWordPayloads => new()
+    {
+        { "{\"text\":\"альфа\",\"result\":{}}" },
+        { "{\"text\":\"альфа\",\"result\":[null]}" },
+        { "{\"text\":\"альфа\",\"result\":[{\"conf\":0.94,\"start\":0.5,\"end\":1.1}] }" },
+        { "{\"text\":\"альфа\",\"result\":[{\"word\":\"альфа\",\"start\":0.5,\"end\":1.1}] }" },
+        { "{\"text\":\"альфа\",\"result\":[{\"word\":\"альфа\",\"conf\":0.94,\"end\":1.1}] }" },
+        { "{\"text\":\"альфа\",\"result\":[{\"word\":\"альфа\",\"conf\":0.94,\"start\":0.5}] }" },
+        { "{\"text\":\"альфа\",\"result\":[{\"word\":\"альфа\",\"conf\":1e400,\"start\":0.5,\"end\":1.1}] }" },
+        { "{\"text\":\"альфа\",\"result\":[{\"word\":\"альфа\",\"conf\":0.94,\"start\":1e400,\"end\":1.1}] }" },
+        { "{\"text\":\"альфа\",\"result\":[{\"word\":\"альфа\",\"conf\":0.94,\"start\":0.5,\"end\":1e400}] }" },
+        { "{\"text\":\"альфа\",\"result\":[{\"word\":\"альфа\",\"conf\":0.94,\"start\":-0.1,\"end\":1.1}] }" },
+        { "{\"text\":\"альфа\",\"result\":[{\"word\":\"альфа\",\"conf\":0.94,\"start\":1.1,\"end\":0.5}] }" },
+        { "{\"text\":\"альфа\",\"result\":[{\"word\":\"альфа\",\"conf\":0.94,\"start\":0.5,\"end\":0.5}] }" },
+        { "{\"text\":\"альфа\",\"result\":[{\"word\":\"аль\",\"conf\":0.94,\"start\":0.5,\"end\":0.9},{\"word\":\"фа\",\"conf\":0.92,\"start\":0.8,\"end\":1.1}] }" },
+        { "{\"text\":\"альфа\",\"result\":[{\"word\":\"альфа\",\"conf\":-0.01,\"start\":0.5,\"end\":1.1}] }" },
+        { "{\"text\":\"альфа\",\"result\":[{\"word\":\"альфа\",\"conf\":1.01,\"start\":0.5,\"end\":1.1}] }" },
+    };
+
+    [Theory]
+    [MemberData(nameof(InvalidTimedWordPayloads))]
+    public void Parse_FinalResultWithInvalidTimedWordPayload_RejectsArrayAtomically(string json)
+    {
+        var result = VoskRecognitionJsonParser.Parse(json, isFinal: true);
+
+        result.Text.Should().Be("альфа");
+        result.Confidence.Should().Be(0);
+        result.Words.Should().BeEmpty();
+    }
+
     [Fact]
     public void Parse_PartialResult_ReturnsTextWithoutActivationConfidence()
     {
@@ -44,6 +96,7 @@ public sealed class VoskRecognitionJsonParserTests
         var result = VoskRecognitionJsonParser.Parse(json, isFinal: false);
 
         result.Should().Be(new VoskRecognition("альфа", 0, false));
+        result.Words.Should().BeEmpty();
     }
 
     [Theory]
@@ -52,12 +105,13 @@ public sealed class VoskRecognitionJsonParserTests
     public void Parse_FinalResultWithOutOfRangeConfidence_ReturnsZero(double confidence)
     {
         var json = $$"""
-            { "text": "альфа", "result": [{ "conf": {{confidence.ToString(CultureInfo.InvariantCulture)}}, "word": "альфа" }] }
+            { "text": "альфа", "result": [{ "conf": {{confidence.ToString(CultureInfo.InvariantCulture)}}, "start": 0.5, "end": 1.1, "word": "альфа" }] }
             """;
 
         var result = VoskRecognitionJsonParser.Parse(json, isFinal: true);
 
         result.Confidence.Should().Be(0);
+        result.Words.Should().BeEmpty();
     }
 
     [Fact]
