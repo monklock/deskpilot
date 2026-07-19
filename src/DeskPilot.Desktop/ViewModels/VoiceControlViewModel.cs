@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using DeskPilot.Application.Voice;
@@ -318,8 +319,23 @@ public sealed partial class VoiceControlViewModel : ObservableObject
         _ => state.ToString(),
     };
 
-    private static string ToCommandOutcome(VoicePipelineSnapshot snapshot) =>
-        snapshot.LastResolvedCommandId is null
+    private static string ToCommandOutcome(VoicePipelineSnapshot snapshot)
+    {
+        if (snapshot.ErrorCode is "speech-not-detected" or "speech-not-recognized")
+        {
+            return "Команда не распознана";
+        }
+
+        if (snapshot.ErrorCode == "speech-confidence-low"
+            && !string.IsNullOrWhiteSpace(snapshot.LastRecognizedText)
+            && snapshot.LastRecognitionConfidence is double confidence)
+        {
+            return string.Create(
+                CultureInfo.InvariantCulture,
+                $"Распознано, confidence: {confidence:F2}");
+        }
+
+        return snapshot.LastResolvedCommandId is null
             ? snapshot.LastIntentStatus switch
             {
                 IntentResolutionStatus.NotFound => "Команда не найдена",
@@ -338,6 +354,7 @@ public sealed partial class VoiceControlViewModel : ObservableObject
                     $"{snapshot.LastResolvedCommandId} — недоступно",
                 _ => snapshot.LastResolvedCommandId,
             };
+    }
 
     partial void OnCurrentStateChanged(VoiceAssistantState value) => OnPropertyChanged(nameof(CurrentStateText));
 

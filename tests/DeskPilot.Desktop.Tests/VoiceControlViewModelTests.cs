@@ -132,6 +132,48 @@ public sealed class VoiceControlViewModelTests
         fixture.ViewModel.StatusMessage.Should().Be("Команда выполнена.");
     }
 
+    [Fact]
+    public async Task StateChange_LowConfidence_ShowsRecognizedTextAndConfidence()
+    {
+        var fixture = VoiceViewModelFixture.Create(VoiceSettings.Default, []);
+        await fixture.ViewModel.InitializeAsync();
+        var snapshot = VoicePipelineSnapshot.Disabled with
+        {
+            State = VoiceAssistantState.Error,
+            LastRecognizedText = "сделай тише",
+            LastRecognitionConfidence = 0.42,
+            ErrorCode = "speech-confidence-low",
+            SafeMessage = "Команда распознана неуверенно. Повторите её.",
+        };
+
+        fixture.State.SnapshotChanged +=
+            Raise.Event<EventHandler<VoicePipelineSnapshot>>(fixture.State, snapshot);
+
+        fixture.ViewModel.LastRecognizedText.Should().Be("сделай тише");
+        fixture.ViewModel.LastCommandOutcome.Should().Be("Распознано, confidence: 0.42");
+    }
+
+    [Theory]
+    [InlineData("speech-not-detected")]
+    [InlineData("speech-not-recognized")]
+    public async Task StateChange_NoRecognizedText_ShowsStableDiagnosticOutcome(string errorCode)
+    {
+        var fixture = VoiceViewModelFixture.Create(VoiceSettings.Default, []);
+        await fixture.ViewModel.InitializeAsync();
+        var snapshot = VoicePipelineSnapshot.Disabled with
+        {
+            State = VoiceAssistantState.Error,
+            ErrorCode = errorCode,
+            SafeMessage = "Команда не распознана",
+        };
+
+        fixture.State.SnapshotChanged +=
+            Raise.Event<EventHandler<VoicePipelineSnapshot>>(fixture.State, snapshot);
+
+        fixture.ViewModel.LastRecognizedText.Should().Be("—");
+        fixture.ViewModel.LastCommandOutcome.Should().Be("Команда не распознана");
+    }
+
     private static AudioInputDevice Microphone(string id, string name) => new(id, name, false, true);
 
     private sealed class VoiceViewModelFixture
