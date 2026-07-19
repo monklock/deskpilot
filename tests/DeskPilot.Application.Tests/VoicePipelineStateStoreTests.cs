@@ -81,6 +81,57 @@ public sealed class VoicePipelineStateStoreTests
         store.Snapshot.Should().BeSameAs(second);
     }
 
+    [Fact]
+    public void Publish_FatalSubscriberFailurePropagatesAndNextPublishDrainsQueuedSnapshots()
+    {
+        var store = new VoicePipelineStateStore();
+        var first = VoicePipelineSnapshot.Disabled with { State = VoiceAssistantState.WaitingForWakeWord };
+        var queued = VoicePipelineSnapshot.Disabled with { State = VoiceAssistantState.WakeWordDetected };
+        var final = VoicePipelineSnapshot.Disabled with { State = VoiceAssistantState.ListeningForCommand };
+        var observed = new List<VoiceAssistantState>();
+        var fatal = new AggregateException(
+            "private subscriber detail",
+            new InvalidOperationException("ordinary inner failure"),
+            new OutOfMemoryException("private fatal detail"));
+        EventHandler<VoicePipelineSnapshot>? fatalSubscriber = null;
+        fatalSubscriber = (_, snapshot) =>
+        {
+            if (ReferenceEquals(snapshot, first))
+            {
+                Publish(store, queued);
+                throw fatal;
+            }
+        };
+        store.SnapshotChanged += fatalSubscriber;
+        store.SnapshotChanged += (_, snapshot) => observed.Add(snapshot.State);
+
+        var failure = Record.Exception(() => PublishUnwrapped(store, first));
+
+        failure.Should().BeSameAs(fatal);
+        store.SnapshotChanged -= fatalSubscriber;
+        Publish(store, final);
+        observed.Should().Equal(
+            VoiceAssistantState.WakeWordDetected,
+            VoiceAssistantState.ListeningForCommand);
+        store.Snapshot.Should().BeSameAs(final);
+    }
+
     private static void Publish(VoicePipelineStateStore store, VoicePipelineSnapshot snapshot) =>
         PublishMethod.Invoke(store, [snapshot]);
+
+    private static void PublishUnwrapped(
+        VoicePipelineStateStore store,
+        VoicePipelineSnapshot snapshot)
+    {
+        try
+        {
+            Publish(store, snapshot);
+        }
+        catch (TargetInvocationException exception) when (exception.InnerException is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                .Capture(exception.InnerException)
+                .Throw();
+        }
+    }
 }

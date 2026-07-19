@@ -35,6 +35,7 @@ public interface IVoicePipelineController
 /// <summary>Owns one continuous capture session across wake and command cycles.</summary>
 public sealed class VoicePipelineCoordinator : IVoicePipelineController
 {
+    private const int MinimumCycleRecoveryDelayMilliseconds = 50;
     private const string InvalidWakeTimingCode = "voice-wake-timing-invalid";
     private const string InvalidWakeTimingMessage =
         "Не удалось определить границы ключевой фразы. Повторите попытку.";
@@ -94,10 +95,20 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
 
             if (_runTask is not null)
             {
-                await ObserveRunTaskAsync(_runTask, _runCancellation).ConfigureAwait(false);
+                var completedTask = _runTask;
+                var completedCancellation = _runCancellation;
+                _runTask = null;
+                _runCancellation = null;
+                try
+                {
+                    await ObserveRunTaskAsync(completedTask, completedCancellation).ConfigureAwait(false);
+                }
+                finally
+                {
+                    completedCancellation?.Dispose();
+                }
             }
 
-            _runCancellation?.Dispose();
             _runCancellation = new CancellationTokenSource();
             _runTask = StartRunLoop(_runCancellation.Token);
         }
@@ -116,17 +127,22 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             var runTask = _runTask;
             var runCancellation = _runCancellation;
             runCancellation?.Cancel();
-            if (runTask is not null)
+            try
             {
-                await ObserveRunTaskAsync(runTask, runCancellation).ConfigureAwait(false);
+                if (runTask is not null)
+                {
+                    await ObserveRunTaskAsync(runTask, runCancellation).ConfigureAwait(false);
+                }
             }
-
-            if (ReferenceEquals(_runTask, runTask))
+            finally
             {
-                _runTask = null;
-                _runCancellation = null;
-                runCancellation?.Dispose();
-                PublishDisabled();
+                if (ReferenceEquals(_runTask, runTask))
+                {
+                    _runTask = null;
+                    _runCancellation = null;
+                    runCancellation?.Dispose();
+                    PublishDisabled();
+                }
             }
         }
         finally
@@ -160,12 +176,18 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             _runTask = null;
             _runCancellation = null;
             runCancellation?.Cancel();
-            if (runTask is not null)
+            try
             {
-                await ObserveRunTaskAsync(runTask, runCancellation).ConfigureAwait(false);
+                if (runTask is not null)
+                {
+                    await ObserveRunTaskAsync(runTask, runCancellation).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                runCancellation?.Dispose();
             }
 
-            runCancellation?.Dispose();
             await _pipelineGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             pipelineHeld = true;
             PublishDisabled();
@@ -215,7 +237,10 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
                 }
                 else
                 {
-                    await Task.Delay(settings.Cooldown, _timeProvider, cancellationToken)
+                    await Task.Delay(
+                            GetRecoveryDelay(settings.Cooldown),
+                            _timeProvider,
+                            cancellationToken)
                         .ConfigureAwait(false);
                 }
             }
@@ -223,7 +248,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             {
                 return;
             }
-            catch (Exception exception)
+            catch (Exception exception) when (!VoiceExceptionPolicy.IsFatal(exception))
             {
                 _logger.LogError(
                     "Voice run-loop boundary contained {ExceptionType}.",
@@ -260,6 +285,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
                 PublishError(exception.Code, exception.SafeMessage);
             }
             catch (AudioCaptureException exception)
+                when (!VoiceExceptionPolicy.IsFatal(exception))
             {
                 _logger.LogWarning(
                     "Voice capture failure {ResultCode}.",
@@ -269,6 +295,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
                     ToCaptureSafeMessage(exception.Code));
             }
             catch (SpeechRecognitionException exception)
+                when (!VoiceExceptionPolicy.IsFatal(exception))
             {
                 _logger.LogWarning(
                     "Voice recognition failure {FailureCode}.",
@@ -292,7 +319,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             {
                 throw;
             }
-            catch (Exception exception)
+            catch (Exception exception) when (!VoiceExceptionPolicy.IsFatal(exception))
             {
                 _logger.LogError(
                     "Voice pipeline failed with {ExceptionType}.",
@@ -346,7 +373,8 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         {
             providers = _runtimeProviders.Create(wakeModel, commandModel);
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException exception)
+            when (!VoiceExceptionPolicy.IsFatal(exception))
         {
             throw ModelUnavailable();
         }
@@ -374,7 +402,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
                 completedCycles++;
             }
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!VoiceExceptionPolicy.IsFatal(exception))
         {
             primaryFailure = ExceptionDispatchInfo.Capture(exception);
         }
@@ -384,7 +412,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             {
                 await capture.DisposeAsync().ConfigureAwait(false);
             }
-            catch (Exception exception)
+            catch (Exception exception) when (!VoiceExceptionPolicy.IsFatal(exception))
             {
                 if (primaryFailure is not null || lastCycleHadFailure)
                 {
@@ -426,7 +454,8 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
                 .ConfigureAwait(false);
         }
         catch (WakeWordDetectionException exception)
-            when (exception.Code == WakeWordDetectionFailureCode.InvalidTiming)
+            when (exception.Code == WakeWordDetectionFailureCode.InvalidTiming
+                && !VoiceExceptionPolicy.IsFatal(exception))
         {
             _logger.LogWarning(
                 "Voice wake detection failed with {FailureCode}.",
@@ -453,7 +482,8 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             return true;
         }
         catch (AudioCaptureException exception)
-            when (ClassifyCaptureFailure(exception.Code) == VoiceFailureScope.CycleLocal)
+            when (ClassifyCaptureFailure(exception.Code) == VoiceFailureScope.CycleLocal
+                && !VoiceExceptionPolicy.IsFatal(exception))
         {
             _logger.LogWarning(
                 "Voice cycle capture failure {ResultCode}.",
@@ -467,6 +497,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             return true;
         }
         catch (SpeechRecognitionException exception)
+            when (!VoiceExceptionPolicy.IsFatal(exception))
         {
             _logger.LogWarning(
                 "Voice recognition failure {FailureCode}.",
@@ -485,7 +516,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             });
             await PlaySignalSafelyAsync(VoiceSignal.Failure, cancellationToken)
                 .ConfigureAwait(false);
-            await PublishCooldownAsync(settings.Cooldown, cancellationToken)
+            await PublishCooldownAsync(GetRecoveryDelay(settings.Cooldown), cancellationToken)
                 .ConfigureAwait(false);
             return true;
         }
@@ -497,7 +528,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!VoiceExceptionPolicy.IsFatal(exception))
         {
             _logger.LogError(
                 "Voice cycle failed with {ExceptionType}.",
@@ -617,7 +648,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             });
             await PlaySignalSafelyAsync(VoiceSignal.Failure, cancellationToken)
                 .ConfigureAwait(false);
-            await PublishCooldownAsync(settings.Cooldown, cancellationToken)
+            await PublishCooldownAsync(GetRecoveryDelay(settings.Cooldown), cancellationToken)
                 .ConfigureAwait(false);
             return true;
         }
@@ -668,8 +699,12 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         });
         await PlaySignalSafelyAsync(outcome.Signal, cancellationToken).ConfigureAwait(false);
         activity = activity with { Audio = null };
-        await PublishCooldownAsync(settings.Cooldown, cancellationToken).ConfigureAwait(false);
-        return outcome.ErrorCode is not null;
+        var cycleFailed = outcome.ErrorCode is not null;
+        await PublishCooldownAsync(
+                cycleFailed ? GetRecoveryDelay(settings.Cooldown) : settings.Cooldown,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return cycleFailed;
     }
 
     private VoicePipelineSnapshot NewCycleSnapshot(
@@ -712,7 +747,8 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
     {
         PublishError(code, safeMessage);
         await PlaySignalSafelyAsync(VoiceSignal.Failure, cancellationToken).ConfigureAwait(false);
-        await PublishCooldownAsync(cooldown, cancellationToken).ConfigureAwait(false);
+        await PublishCooldownAsync(GetRecoveryDelay(cooldown), cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task WaitForMicrophoneAsync(
@@ -765,7 +801,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         catch (OperationCanceledException) when (ownedCancellation?.IsCancellationRequested == true)
         {
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!VoiceExceptionPolicy.IsFatal(exception))
         {
             _logger.LogError(
                 "Voice run task completed with {ExceptionType}.",
@@ -788,7 +824,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!VoiceExceptionPolicy.IsFatal(exception))
         {
             _logger.LogWarning(
                 "Voice signal {Signal} failed with {ExceptionType}.",
@@ -904,6 +940,11 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
 
     private static bool IsNormalizedRms(double value) =>
         double.IsFinite(value) && value is >= 0 and <= 1;
+
+    private static TimeSpan GetRecoveryDelay(TimeSpan configuredCooldown) =>
+        configuredCooldown > TimeSpan.Zero
+            ? configuredCooldown
+            : TimeSpan.FromMilliseconds(MinimumCycleRecoveryDelayMilliseconds);
 
     private static VoiceFailureScope ClassifyCaptureFailure(AudioInputResultCode code) =>
         code == AudioInputResultCode.BufferOverrun

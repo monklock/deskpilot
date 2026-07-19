@@ -273,6 +273,135 @@ public sealed class VoicePipelineCoordinatorTests
     }
 
     [Fact(Timeout = 5_000)]
+    public async Task EnabledPipeline_TypedWakeFailureWithZeroCooldownWaitsMinimumDelayAndKeepsSession()
+    {
+        var timeProvider = new ManualTimeProvider();
+        var fixture = PipelineFixture.Create(
+            successfulWakeCyclesBeforeBlock: 0,
+            cooldown: TimeSpan.Zero,
+            timeProvider: timeProvider);
+        var firstWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wakeCalls = 0;
+        fixture.Wake.WaitForDetectionAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<WakeWordOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns<WakeWordDetectionResult>(_ =>
+            {
+                var call = Interlocked.Increment(ref wakeCalls);
+                (call == 1 ? firstWake : secondWake).TrySetResult();
+                throw new WakeWordDetectionException(
+                    WakeWordDetectionFailureCode.InvalidTiming,
+                    "private Vosk timing detail");
+            });
+        var failureSignals = 0;
+        fixture.Signals.PlayAsync(VoiceSignal.Failure, Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                if (Interlocked.Increment(ref failureSignals) == 2)
+                {
+                    await Task.Delay(
+                        Timeout.InfiniteTimeSpan,
+                        call.ArgAt<CancellationToken>(1));
+                }
+            });
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        try
+        {
+            await firstWake.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            var firstPostFailureBoundary = await Task.WhenAny(
+                timeProvider.TimerScheduled.Task,
+                secondWake.Task).WaitAsync(TimeSpan.FromSeconds(2));
+
+            firstPostFailureBoundary.Should().BeSameAs(timeProvider.TimerScheduled.Task);
+            secondWake.Task.IsCompleted.Should().BeFalse();
+            fixture.BufferedCaptures.OpenCount.Should().Be(1);
+
+            timeProvider.Advance(TimeSpan.FromMilliseconds(50));
+            await secondWake.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            wakeCalls.Should().Be(2);
+            fixture.BufferedCaptures.OpenCount.Should().Be(1);
+            fixture.Buffered.OpenedOffsets.Should().StartWith([0L, 0L]);
+        }
+        finally
+        {
+            await fixture.Coordinator.DisableAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task EnabledPipeline_FailedHandlerPreservesPositiveCooldownAndHealthySession()
+    {
+        var timeProvider = new ManualTimeProvider();
+        var fixture = PipelineFixture.Create(
+            successfulWakeCyclesBeforeBlock: 2,
+            cooldown: TimeSpan.FromMilliseconds(200),
+            timeProvider: timeProvider);
+        var request = new CommandRequest(CommandId.From("audio.change-volume"));
+        var firstHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerCalls = 0;
+        fixture.Commands.ExecuteAsync(
+                Arg.Any<string>(),
+                Arg.Any<Action<VoiceCommandExecutionProgress>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                call.ArgAt<Action<VoiceCommandExecutionProgress>>(1)(
+                    new VoiceCommandExecutionProgress(
+                        request.CommandId,
+                        IntentResolutionStatus.Resolved,
+                        0.92));
+                var count = Interlocked.Increment(ref handlerCalls);
+                (count == 1 ? firstHandler : secondHandler).TrySetResult();
+                return new VoiceCommandExecutionResult(
+                    new IntentResolutionResult(IntentResolutionStatus.Resolved, request, 0.92),
+                    new CommandExecutionResult(
+                        request.CommandId,
+                        CommandExecutionStatus.Failed,
+                        "private endpoint detail")
+                    {
+                        ErrorCode = "audio-endpoint-unavailable",
+                    });
+            });
+        var failureSignals = 0;
+        fixture.Signals.PlayAsync(VoiceSignal.Failure, Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                if (Interlocked.Increment(ref failureSignals) == 2)
+                {
+                    await Task.Delay(
+                        Timeout.InfiniteTimeSpan,
+                        call.ArgAt<CancellationToken>(1));
+                }
+            });
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        try
+        {
+            await firstHandler.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await timeProvider.TimerScheduled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            secondHandler.Task.IsCompleted.Should().BeFalse();
+
+            timeProvider.Advance(TimeSpan.FromMilliseconds(199));
+            secondHandler.Task.IsCompleted.Should().BeFalse();
+            timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+            await secondHandler.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            handlerCalls.Should().Be(2);
+            fixture.BufferedCaptures.OpenCount.Should().Be(1);
+            fixture.Buffered.OpenedOffsets.Should().StartWith([0L, 24_000L, 40_000L, 64_000L]);
+        }
+        finally
+        {
+            await fixture.Coordinator.DisableAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact(Timeout = 5_000)]
     public async Task EnabledPipeline_WhisperFailureKeepsSessionAndNextCycleStartsAtLiveEdge()
     {
         var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 2);
@@ -576,6 +705,45 @@ public sealed class VoicePipelineCoordinatorTests
         release.Set();
         await disable;
         fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task EnableAsync_AfterFatalRunTaskObservesFailureBeforeStartingReplacement()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        var fatal = new OutOfMemoryException("private settings detail");
+        var settingsCalls = 0;
+        fixture.Settings.GetAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            if (Interlocked.Increment(ref settingsCalls) == 1)
+            {
+                throw fatal;
+            }
+
+            return fixture.SettingsValue;
+        });
+
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        try
+        {
+            var priorRunTask = GetRunTask(fixture.Coordinator);
+            var initialFailure = await Record.ExceptionAsync(
+                () => priorRunTask.WaitAsync(TimeSpan.FromSeconds(2)));
+            initialFailure.Should().BeSameAs(fatal);
+
+            var repeatFailure = await Record.ExceptionAsync(
+                () => fixture.Coordinator.EnableAsync(CancellationToken.None));
+            repeatFailure.Should().BeSameAs(fatal);
+            fixture.BufferedCaptures.OpenCount.Should().Be(0);
+
+            await fixture.Coordinator.EnableAsync(CancellationToken.None);
+            await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            fixture.BufferedCaptures.OpenCount.Should().Be(1);
+        }
+        finally
+        {
+            await fixture.Coordinator.DisableAsync(CancellationToken.None);
+        }
     }
 
     [Fact]
@@ -1260,6 +1428,61 @@ public sealed class VoicePipelineCoordinatorTests
         fixture.State.Snapshot.SafeMessage.Should().NotContain("private");
     }
 
+    [Theory(Timeout = 5_000)]
+    [InlineData(FatalFailureCase.OutOfMemory)]
+    [InlineData(FatalFailureCase.AccessViolation)]
+    [InlineData(FatalFailureCase.AppDomainUnloaded)]
+    [InlineData(FatalFailureCase.BadImageFormat)]
+    [InlineData(FatalFailureCase.InnerOutOfMemory)]
+    [InlineData(FatalFailureCase.AggregateBadImageFormat)]
+    public async Task RunSingleCycleAsync_FatalProviderFailurePropagatesUnchanged(
+        FatalFailureCase failureCase)
+    {
+        var fixture = PipelineFixture.Create();
+        var fatal = CreateFatalFailure(failureCase);
+        fixture.Wake.WaitForDetectionAsync(
+                Arg.Any<IVoiceAudioCursor>(),
+                Arg.Any<WakeWordOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns<WakeWordDetectionResult>(_ => throw fatal);
+
+        var failure = await Record.ExceptionAsync(
+            () => fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None));
+
+        failure.Should().BeSameAs(fatal);
+        fixture.Buffered.DisposeCount.Should().Be(1);
+        fixture.Logger.Entries.Should().OnlyContain(entry => entry.Exception == null);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_FatalSignalFailurePropagatesUnchanged()
+    {
+        var fixture = PipelineFixture.Create();
+        var fatal = new AccessViolationException("private signal detail");
+        fixture.Signals.PlayAsync(VoiceSignal.Success, Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw fatal);
+
+        var failure = await Record.ExceptionAsync(
+            () => fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None));
+
+        failure.Should().BeSameAs(fatal);
+        fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task RunSingleCycleAsync_FatalDisposalFailurePropagatesUnchanged()
+    {
+        var fixture = PipelineFixture.Create();
+        var fatal = new BadImageFormatException("private disposal detail");
+        fixture.Buffered.DisposeFailure = fatal;
+
+        var failure = await Record.ExceptionAsync(
+            () => fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None));
+
+        failure.Should().BeSameAs(fatal);
+        fixture.Buffered.DisposeCount.Should().Be(1);
+    }
+
     [Fact(Timeout = 5_000)]
     public async Task RunSingleCycleAsync_LogsExcludeEndpointTextOffsetsAndRmsValues()
     {
@@ -1279,13 +1502,29 @@ public sealed class VoicePipelineCoordinatorTests
         await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
         var loggedData = fixture.Logger.Entries
-            .SelectMany(entry => entry.Arguments.Prepend(entry.Template))
+            .SelectMany(entry => entry.Arguments
+                .Prepend(entry.Template)
+                .Append(entry.Exception)
+                .Append(entry.Exception?.Message))
             .Select(value => value?.ToString() ?? string.Empty)
             .ToArray();
+        fixture.Logger.Entries.Should().OnlyContain(entry => entry.Exception == null);
         loggedData.Should().NotContain(value => value.Contains("bt-private", StringComparison.Ordinal));
         loggedData.Should().NotContain(value => value.Contains("секретная команда", StringComparison.Ordinal));
         loggedData.Should().NotContain(value => value.Contains("123456", StringComparison.Ordinal));
         loggedData.Should().NotContain(value => value.Contains("0.987654", StringComparison.Ordinal));
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task BufferedCursor_ReadAfterOwnerDisposalThrowsObjectDisposed()
+    {
+        var session = new TestBufferedCaptureSession("bt-mic");
+        var cursor = session.OpenCursor(0);
+        await session.DisposeAsync();
+
+        var action = async () => await ConsumeAvailableFramesAsync(cursor, CancellationToken.None);
+
+        await action.Should().ThrowAsync<ObjectDisposedException>();
     }
 
     private static VoiceActivityResult SuccessfulActivity(long commandStartSampleOffset = 24_000)
@@ -1334,6 +1573,28 @@ public sealed class VoicePipelineCoordinatorTests
         {
         }
     }
+
+    private static Task GetRunTask(VoicePipelineCoordinator coordinator) =>
+        (Task?)typeof(VoicePipelineCoordinator)
+            .GetField("_runTask", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?.GetValue(coordinator)
+        ?? throw new InvalidOperationException("VoicePipelineCoordinator._runTask was not found.");
+
+    private static Exception CreateFatalFailure(FatalFailureCase failureCase) => failureCase switch
+    {
+        FatalFailureCase.OutOfMemory => new OutOfMemoryException("private provider detail"),
+        FatalFailureCase.AccessViolation => new AccessViolationException("private provider detail"),
+        FatalFailureCase.AppDomainUnloaded => new AppDomainUnloadedException("private provider detail"),
+        FatalFailureCase.BadImageFormat => new BadImageFormatException("private provider detail"),
+        FatalFailureCase.InnerOutOfMemory => new InvalidOperationException(
+            "private outer detail",
+            new OutOfMemoryException("private inner detail")),
+        FatalFailureCase.AggregateBadImageFormat => new AggregateException(
+            "private aggregate detail",
+            new InvalidOperationException("ordinary failure"),
+            new BadImageFormatException("private inner detail")),
+        _ => throw new ArgumentOutOfRangeException(nameof(failureCase)),
+    };
 
     private static async IAsyncEnumerable<IReadOnlyList<AudioInputDevice>> DeviceSnapshots(
         params IReadOnlyList<AudioInputDevice>[] snapshots)
@@ -1409,7 +1670,8 @@ public sealed class VoicePipelineCoordinatorTests
             int successfulWakeCyclesBeforeBlock = 1,
             TimeSpan? cooldown = null,
             long initialLiveEdge = 0,
-            string? endpointId = "bt-mic")
+            string? endpointId = "bt-mic",
+            TimeProvider? timeProvider = null)
         {
             var settingsValue = VoiceSettings.Default with
             {
@@ -1532,7 +1794,7 @@ public sealed class VoicePipelineCoordinatorTests
                 signals,
                 commands,
                 state,
-                TimeProvider.System,
+                timeProvider ?? TimeProvider.System,
                 logger);
 
             return new PipelineFixture
@@ -1691,6 +1953,8 @@ public sealed class VoicePipelineCoordinatorTests
 
         public Exception? TerminalFailure { get; set; }
 
+        public bool IsDisposed => _disposed;
+
         public void QueueCursorReadEnd(long endSampleOffset) => _cursorReadEnds.Enqueue(endSampleOffset);
 
         public IVoiceAudioCursor OpenCursor(long startSampleOffset)
@@ -1744,6 +2008,7 @@ public sealed class VoicePipelineCoordinatorTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             ObjectDisposedException.ThrowIf(DisposeCount > 0, this);
+            ObjectDisposedException.ThrowIf(Owner.IsDisposed, Owner);
             if (Owner.TerminalFailure is not null)
             {
                 throw Owner.TerminalFailure;
@@ -1761,6 +2026,7 @@ public sealed class VoicePipelineCoordinatorTests
             Owner.LatestSampleOffset = Math.Max(Owner.LatestSampleOffset, endSampleOffset);
             var sampleCount = checked((int)(endSampleOffset - StartSampleOffset));
             await Task.Yield();
+            ObjectDisposedException.ThrowIf(Owner.IsDisposed, Owner);
             yield return new SequencedAudioFrame(
                 new byte[checked(sampleCount * sizeof(short))],
                 TimeSpan.FromSeconds(sampleCount / 16_000d),
@@ -1772,6 +2038,130 @@ public sealed class VoicePipelineCoordinatorTests
         {
             DisposeCount++;
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private readonly object _sync = new();
+        private readonly List<ManualTimer> _timers = [];
+        private DateTimeOffset _utcNow = DateTimeOffset.Parse("2026-07-19T00:00:00+00:00");
+
+        public TaskCompletionSource TimerScheduled { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            lock (_sync)
+            {
+                return _utcNow;
+            }
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            ArgumentNullException.ThrowIfNull(callback);
+            var timer = new ManualTimer(this, callback, state, dueTime, period);
+            lock (_sync)
+            {
+                _timers.Add(timer);
+            }
+
+            TimerScheduled.TrySetResult();
+            return timer;
+        }
+
+        public void Advance(TimeSpan elapsed)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(elapsed, TimeSpan.Zero);
+            ManualTimer[] dueTimers;
+            lock (_sync)
+            {
+                _utcNow += elapsed;
+                dueTimers = _timers.Where(timer => timer.IsDue(_utcNow)).ToArray();
+            }
+
+            foreach (var timer in dueTimers)
+            {
+                timer.Fire();
+            }
+        }
+
+        private sealed class ManualTimer(
+            ManualTimeProvider owner,
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period) : ITimer
+        {
+            private readonly object _sync = new();
+            private DateTimeOffset? _dueAt = DueAt(owner.GetUtcNow(), dueTime);
+            private TimeSpan _period = period;
+            private bool _disposed;
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                var now = owner.GetUtcNow();
+                lock (_sync)
+                {
+                    if (_disposed)
+                    {
+                        return false;
+                    }
+
+                    _dueAt = DueAt(now, dueTime);
+                    _period = period;
+                    return true;
+                }
+            }
+
+            public void Dispose()
+            {
+                lock (_sync)
+                {
+                    _disposed = true;
+                    _dueAt = null;
+                }
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+
+            public bool IsDue(DateTimeOffset now)
+            {
+                lock (_sync)
+                {
+                    return !_disposed && _dueAt is not null && _dueAt <= now;
+                }
+            }
+
+            public void Fire()
+            {
+                var now = owner.GetUtcNow();
+                lock (_sync)
+                {
+                    if (_disposed || _dueAt is null || _dueAt > now)
+                    {
+                        return;
+                    }
+
+                    _dueAt = _period == Timeout.InfiniteTimeSpan
+                        ? null
+                        : DueAt(now, _period);
+                }
+
+                callback(state);
+            }
+
+            private static DateTimeOffset? DueAt(DateTimeOffset now, TimeSpan delay) =>
+                delay == Timeout.InfiniteTimeSpan ? null : now + delay;
         }
     }
 
@@ -1805,7 +2195,7 @@ public sealed class VoicePipelineCoordinatorTests
                 ?? [];
             lock (_sync)
             {
-                Entries.Add(new LogEntry(logLevel, template, arguments));
+                Entries.Add(new LogEntry(logLevel, template, arguments, exception));
             }
         }
     }
@@ -1813,5 +2203,16 @@ public sealed class VoicePipelineCoordinatorTests
     private sealed record LogEntry(
         LogLevel Level,
         string Template,
-        IReadOnlyList<object?> Arguments);
+        IReadOnlyList<object?> Arguments,
+        Exception? Exception);
+
+    public enum FatalFailureCase
+    {
+        OutOfMemory,
+        AccessViolation,
+        AppDomainUnloaded,
+        BadImageFormat,
+        InnerOutOfMemory,
+        AggregateBadImageFormat,
+    }
 }

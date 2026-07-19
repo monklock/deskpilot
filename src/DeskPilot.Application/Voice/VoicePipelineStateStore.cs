@@ -104,23 +104,33 @@ public sealed class VoicePipelineStateStore : IVoicePipelineStateSource
             _isDispatching = true;
         }
 
-        while (true)
+        try
         {
-            VoicePipelineSnapshot next;
-            EventHandler<VoicePipelineSnapshot>? subscribers;
-            lock (_sync)
+            while (true)
             {
-                if (_pendingNotifications.Count == 0)
+                VoicePipelineSnapshot next;
+                EventHandler<VoicePipelineSnapshot>? subscribers;
+                lock (_sync)
                 {
-                    _isDispatching = false;
-                    return;
+                    if (_pendingNotifications.Count == 0)
+                    {
+                        _isDispatching = false;
+                        return;
+                    }
+
+                    next = _pendingNotifications.Dequeue();
+                    subscribers = SnapshotChanged;
                 }
 
-                next = _pendingNotifications.Dequeue();
-                subscribers = SnapshotChanged;
+                NotifySubscribers(subscribers, next);
             }
-
-            NotifySubscribers(subscribers, next);
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                _isDispatching = false;
+            }
         }
     }
 
@@ -139,7 +149,7 @@ public sealed class VoicePipelineStateStore : IVoicePipelineStateSource
             {
                 subscriber(this, snapshot);
             }
-            catch
+            catch (Exception exception) when (!VoiceExceptionPolicy.IsFatal(exception))
             {
                 // Presentation subscribers cannot interrupt ordered state publication.
             }
