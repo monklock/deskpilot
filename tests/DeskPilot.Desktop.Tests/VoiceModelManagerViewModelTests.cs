@@ -9,6 +9,27 @@ namespace DeskPilot.Desktop.Tests;
 public sealed class VoiceModelManagerViewModelTests
 {
     [Fact]
+    public async Task InitializeAsync_HidesLegacyCatalogAndInstalledModels()
+    {
+        var manager = Substitute.For<IVoiceModelManager>();
+        var model = Model();
+        var legacy = new InstalledVoiceModel(
+            VoiceModelProvider.WakeVosk, "wake-ru", "0.22", "legacy", new string('a', 64),
+            VoiceModelSource.Seed, true, true, DateTimeOffset.UtcNow);
+        manager.GetStateAsync(Arg.Any<CancellationToken>()).Returns(
+            new VoiceModelState(
+                [model, model with { ProviderId = VoiceModelProvider.CommandWhisper }],
+                new Dictionary<VoiceModelProvider, string>())
+            { InstalledModels = [legacy] });
+        var viewModel = new VoiceModelManagerViewModel(manager);
+
+        await viewModel.InitializeAsync();
+
+        viewModel.Models.Should().ContainSingle().Which.Should().Be(model);
+        viewModel.SelectedModel.Should().Be(model);
+    }
+
+    [Fact]
     public async Task InitializeAsync_DoesNotDownloadWithoutExplicitUserAction()
     {
         var manager = Substitute.For<IVoiceModelManager>();
@@ -68,10 +89,10 @@ public sealed class VoiceModelManagerViewModelTests
     {
         var manager = Substitute.For<IVoiceModelManager>();
         var installed = new InstalledVoiceModel(
-            VoiceModelProvider.CommandWhisper,
-            "whisper-multi",
+            VoiceModelProvider.GigaStt,
+            "gigastt-rnnt",
             "retired-small",
-            Path.Combine("CommandWhisper", "whisper-multi", "retired-small"),
+            Path.Combine("GigaStt", "gigastt-rnnt", "retired-small"),
             new string('a', 64),
             VoiceModelSource.Download,
             false,
@@ -96,7 +117,7 @@ public sealed class VoiceModelManagerViewModelTests
                 Arg.Any<VoiceModelProvider>(),
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
-            .Returns<Task<VoiceModelOperationResult>>(_ => throw new IOException("private path"));
+            .Returns<Task<VoiceModelOperationResult>>(_ => throw new IOException("opaque path"));
         var viewModel = new VoiceModelManagerViewModel(manager) { SelectedModel = Model() };
 
         await viewModel.UseModelCommand.ExecuteAsync(null);
@@ -106,16 +127,16 @@ public sealed class VoiceModelManagerViewModelTests
     }
 
     private static VoiceModelDescriptor Model() => new(
-        "whisper-small-multi",
-        VoiceModelProvider.CommandWhisper,
-        "Whisper small multilingual",
-        "openai-small",
+        "gigastt-rnnt",
+        VoiceModelProvider.GigaStt,
+        "GigaSTT RNNT INT8",
+        "v1",
         "HigherAccuracy",
-        new Uri("https://downloads.example.test/ggml-small.bin"),
+        new Uri("https://downloads.example.test/gigastt.zip"),
         new string('a', 64),
         100,
         100,
-        "ggml-small.bin",
+        "gigastt.zip",
         "MIT",
         false,
         VoiceModelArchiveFormat.None,

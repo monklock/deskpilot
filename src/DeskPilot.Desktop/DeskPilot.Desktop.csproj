@@ -14,8 +14,7 @@
     <ProjectReference Include="../DeskPilot.Modules.CommandGroups/DeskPilot.Modules.CommandGroups.csproj" />
     <ProjectReference Include="../DeskPilot.Modules.SystemPower/DeskPilot.Modules.SystemPower.csproj" />
     <ProjectReference Include="../DeskPilot.Voice.AudioCapture/DeskPilot.Voice.AudioCapture.csproj" />
-    <ProjectReference Include="../DeskPilot.Voice.Vosk/DeskPilot.Voice.Vosk.csproj" />
-    <ProjectReference Include="../DeskPilot.Voice.WhisperCpp/DeskPilot.Voice.WhisperCpp.csproj" />
+    <ProjectReference Include="../DeskPilot.Voice.GigaStt/DeskPilot.Voice.GigaStt.csproj" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.Logging.Debug" />

@@ -72,10 +72,7 @@ public sealed partial class VoiceControlViewModel : ObservableObject, IDisposabl
     private string _audioLevelDiagnostics = "—";
 
     [ObservableProperty]
-    private string _activeWakeModelVersion = "Не выбрана";
-
-    [ObservableProperty]
-    private string _activeCommandModelVersion = "Не выбрана";
+    private string _activeModelVersion = "Не выбрана";
 
     [ObservableProperty]
     private string _statusMessage = "Голосовое управление выключено.";
@@ -441,13 +438,12 @@ public sealed partial class VoiceControlViewModel : ObservableObject, IDisposabl
             return;
         }
 
-        ActiveWakeModelVersion = snapshot.ActiveWakeModelVersion ?? "Не выбрана";
+        ActiveModelVersion = snapshot.ActiveWakeModelVersion ?? "Не выбрана";
         if (_isDisposed)
         {
             return;
         }
 
-        ActiveCommandModelVersion = snapshot.ActiveCommandModelVersion ?? "Не выбрана";
         if (!_isDisposed && !string.IsNullOrWhiteSpace(snapshot.SafeMessage))
         {
             StatusMessage = snapshot.SafeMessage;

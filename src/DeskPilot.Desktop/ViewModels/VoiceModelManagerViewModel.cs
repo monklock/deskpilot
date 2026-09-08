@@ -194,7 +194,7 @@ public sealed partial class VoiceModelManagerViewModel : ObservableObject
     private void ApplyState(VoiceModelState state)
     {
         Models.Clear();
-        foreach (var model in state.Catalog)
+        foreach (var model in state.Catalog.Where(model => model.ProviderId == VoiceModelProvider.GigaStt))
         {
             Models.Add(model);
         }
@@ -203,7 +203,7 @@ public sealed partial class VoiceModelManagerViewModel : ObservableObject
             .Select(model => $"{model.ProviderId}:{model.Id}:{model.Version}")
             .ToHashSet(StringComparer.Ordinal);
         foreach (var installed in state.InstalledModels.Where(model =>
-                     !catalogIdentities.Contains($"{model.ProviderId}:{model.ModelId}:{model.Version}")))
+                     model.ProviderId == VoiceModelProvider.GigaStt && !catalogIdentities.Contains($"{model.ProviderId}:{model.ModelId}:{model.Version}")))
         {
             Models.Add(new VoiceModelDescriptor(
                 installed.ModelId,

@@ -11,10 +11,13 @@ namespace DeskPilot.Application.Voice;
 public interface IVoiceRuntimeProviderFactory
 {
     /// <summary>Creates local providers without exposing native projects or absolute paths to Application.</summary>
-    VoiceRuntimeProviders Create(InstalledVoiceModel wakeModel, InstalledVoiceModel commandModel);
+    VoiceRuntimeProviders Create(InstalledVoiceModel model);
+
+    /// <summary>Stops the application-owned recognition process after a capture session ends.</summary>
+    Task StopAsync(CancellationToken cancellationToken);
 }
 
-/// <summary>Contains local providers bound to one pair of active model versions.</summary>
+/// <summary>Contains local providers bound to one shared model version.</summary>
 public sealed record VoiceRuntimeProviders(
     IWakeWordProvider WakeWord,
     ISpeechToTextProvider SpeechToText);
@@ -348,13 +351,10 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         }
 
         var wakeModel = await _models
-            .GetActiveAsync(VoiceModelProvider.WakeVosk, cancellationToken)
+            .GetActiveAsync(VoiceModelProvider.GigaStt, cancellationToken)
             .ConfigureAwait(false)
             ?? throw ModelUnavailable();
-        var commandModel = await _models
-            .GetActiveAsync(VoiceModelProvider.CommandWhisper, cancellationToken)
-            .ConfigureAwait(false)
-            ?? throw ModelUnavailable();
+        var commandModel = wakeModel;
         var resolution = await _devices
             .ResolveAsync(settings.MicrophoneEndpointId, cancellationToken)
             .ConfigureAwait(false);
@@ -371,7 +371,7 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
         VoiceRuntimeProviders providers;
         try
         {
-            providers = _runtimeProviders.Create(wakeModel, commandModel);
+            providers = _runtimeProviders.Create(wakeModel);
         }
         catch (InvalidOperationException exception)
             when (!VoiceExceptionPolicy.IsFatal(exception))
@@ -428,6 +428,14 @@ public sealed class VoicePipelineCoordinator : IVoicePipelineController
             finally
             {
                 Publish(_state.Snapshot with { IsCaptureActive = false });
+                try
+                {
+                    await _runtimeProviders.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (!VoiceExceptionPolicy.IsFatal(exception))
+                {
+                    _logger.LogWarning("Voice runtime shutdown failed with {ExceptionType}.", exception.GetType().Name);
+                }
             }
         }
 

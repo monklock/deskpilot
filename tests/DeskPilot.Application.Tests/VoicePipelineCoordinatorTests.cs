@@ -11,6 +11,21 @@ namespace DeskPilot.Application.Tests;
 
 public sealed class VoicePipelineCoordinatorTests
 {
+    [Fact(Timeout = 5_000)]
+    public async Task DisableAsync_StopsRuntimeOnceAfterCancellingContinuousWakeCapture()
+    {
+        var fixture = PipelineFixture.Create(successfulWakeCyclesBeforeBlock: 0);
+        await fixture.Coordinator.EnableAsync(CancellationToken.None);
+        await fixture.WakeBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+        await fixture.Coordinator.DisableAsync(CancellationToken.None);
+
+        fixture.Buffered.DisposeCount.Should().Be(1);
+        await fixture.RuntimeProviders.Received(1).StopAsync(CancellationToken.None);
+        fixture.State.Snapshot.State.Should().Be(VoiceAssistantState.Disabled);
+    }
+
     [Fact]
     public async Task RunSingleCycleAsync_UsesWakeEndCursorWithoutReopeningMicrophone()
     {
@@ -165,7 +180,7 @@ public sealed class VoicePipelineCoordinatorTests
                 Arg.Any<CancellationToken>())
             .Returns<VoiceActivityResult>(_ => throw new AudioCaptureException(
                 AudioInputResultCode.BufferOverrun,
-                "private offset 123456"));
+                "opaque offset 123456"));
 
         await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
@@ -453,7 +468,7 @@ public sealed class VoicePipelineCoordinatorTests
                 {
                     throw new AudioCaptureException(
                         AudioInputResultCode.BufferOverrun,
-                        "private offset 123456");
+                        "opaque offset 123456");
                 }
 
                 call.ArgAt<Action<VoiceActivityProgress>>(3)(
@@ -1089,7 +1104,7 @@ public sealed class VoicePipelineCoordinatorTests
                 Arg.Any<CancellationToken>())
             .Returns<VoiceActivityResult>(_ => throw new AudioCaptureException(
                 AudioInputResultCode.BufferOverrun,
-                "private offset 123456"));
+                "opaque offset 123456"));
 
         await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
@@ -1224,7 +1239,7 @@ public sealed class VoicePipelineCoordinatorTests
                 Arg.Any<CancellationToken>())
             .Returns<WakeWordDetectionResult>(_ => throw new WakeWordDetectionException(
                 WakeWordDetectionFailureCode.InvalidTiming,
-                "private offset 123456"));
+                "opaque offset 123456"));
 
         await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
@@ -1280,11 +1295,11 @@ public sealed class VoicePipelineCoordinatorTests
     }
 
     [Fact(Timeout = 5_000)]
-    public async Task RunSingleCycleAsync_MissingCommandModelPublishesSafeModelFailure()
+    public async Task RunSingleCycleAsync_MissingSharedModelPublishesSafeModelFailure()
     {
         var fixture = PipelineFixture.Create();
         fixture.Models.GetActiveAsync(
-                VoiceModelProvider.CommandWhisper,
+                VoiceModelProvider.GigaStt,
                 Arg.Any<CancellationToken>())
             .Returns((InstalledVoiceModel?)null);
 
@@ -1300,7 +1315,6 @@ public sealed class VoicePipelineCoordinatorTests
     {
         var fixture = PipelineFixture.Create();
         fixture.RuntimeProviders.Create(
-                Arg.Any<InstalledVoiceModel>(),
                 Arg.Any<InstalledVoiceModel>())
             .Returns<VoiceRuntimeProviders>(_ => throw new InvalidOperationException(
                 "C:\\Users\\Person\\private-model"));
@@ -1497,7 +1511,7 @@ public sealed class VoicePipelineCoordinatorTests
                 Arg.Any<Action<VoiceCommandExecutionProgress>>(),
                 Arg.Any<CancellationToken>())
             .Returns<VoiceCommandExecutionResult>(_ => throw new InvalidOperationException(
-                "bt-private offset=123456 rms=0.987654 секретная команда"));
+                "bt-opaque offset=123456 rms=0.987654 секретная команда"));
 
         await fixture.Coordinator.RunSingleCycleAsync(CancellationToken.None);
 
@@ -1684,20 +1698,13 @@ public sealed class VoicePipelineCoordinatorTests
             settings.GetAsync(Arg.Any<CancellationToken>()).Returns(settingsValue);
 
             var wakeModel = Model(
-                VoiceModelProvider.WakeVosk,
+                VoiceModelProvider.GigaStt,
                 "wake-ru",
                 "0.22",
                 "WakeVosk/wake-ru/0.22");
-            var commandModel = Model(
-                VoiceModelProvider.CommandWhisper,
-                "whisper-base",
-                "openai-base",
-                "CommandWhisper/whisper-base/openai-base/ggml-base.bin");
             var models = Substitute.For<IVoiceModelStore>();
-            models.GetActiveAsync(VoiceModelProvider.WakeVosk, Arg.Any<CancellationToken>())
+            models.GetActiveAsync(VoiceModelProvider.GigaStt, Arg.Any<CancellationToken>())
                 .Returns(wakeModel);
-            models.GetActiveAsync(VoiceModelProvider.CommandWhisper, Arg.Any<CancellationToken>())
-                .Returns(commandModel);
 
             var devices = Substitute.For<IAudioInputDeviceService>();
             if (endpointId is not null)
@@ -1743,7 +1750,7 @@ public sealed class VoicePipelineCoordinatorTests
                     Arg.Any<CancellationToken>())
                 .Returns(new SpeechRecognitionResult("сделай громче", 0.91, true));
             var runtimeProviders = Substitute.For<IVoiceRuntimeProviderFactory>();
-            runtimeProviders.Create(wakeModel, commandModel)
+            runtimeProviders.Create(wakeModel)
                 .Returns(new VoiceRuntimeProviders(wake, speech));
 
             var vad = Substitute.For<IVoiceActivityDetector>();
