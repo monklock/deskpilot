@@ -12,8 +12,7 @@ using DeskPilot.Modules.Abstractions;
 using DeskPilot.Modules.AudioControl;
 using DeskPilot.Voice.Abstractions;
 using DeskPilot.Voice.AudioCapture;
-using DeskPilot.Voice.Vosk;
-using DeskPilot.Voice.WhisperCpp;
+using DeskPilot.Voice.GigaStt;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -83,8 +82,7 @@ public partial class App : System.Windows.Application
                 services.AddSingleton(TimeProvider.System);
                 services.AddDeskPilotInfrastructure();
                 services.AddDeskPilotVoiceAudioCapture();
-                services.AddDeskPilotVosk();
-                services.AddDeskPilotWhisper();
+                services.AddSingleton<GigaSttRuntime>();
                 services.AddDeskPilotVoiceApplication();
                 services.AddSingleton<IVoiceRuntimeProviderFactory, LocalVoiceRuntimeProviderFactory>();
                 services.AddSingleton<IVoiceSignalService, LocalVoiceSignalService>();
@@ -187,8 +185,8 @@ public partial class App : System.Windows.Application
         var publicKey = File.ReadAllText(publicKeyPath);
 
         var options = new VoiceModelManagementOptions(
-            new Uri("https://github.com/monklock/deskpilot/releases/download/voice-models-v1/models.manifest.json"),
-            new Uri("https://github.com/monklock/deskpilot/releases/download/voice-models-v1/models.manifest.sig"),
+            new Uri("https://github.com/monklock/deskpilot/releases/download/voice-models-gigastt-v1/models.manifest.json"),
+            new Uri("https://github.com/monklock/deskpilot/releases/download/voice-models-gigastt-v1/models.manifest.sig"),
             publicKey,
             seedDirectory,
             [

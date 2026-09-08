@@ -7,6 +7,8 @@ public enum VoiceModelProvider
     WakeVosk,
     /// <summary>Whisper command recognition.</summary>
     CommandWhisper,
+    /// <summary>Shared GigaSTT wake-word and command recognition bundle.</summary>
+    GigaStt,
 }
 
 /// <summary>Identifies how a voice model was installed.</summary>

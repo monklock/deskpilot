@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/DeskPilot.Voice.Abstractions/DeskPilot.Voice.Abstractions.csproj" />
+    <ProjectReference Include="../../src/DeskPilot.Voice.GigaStt/DeskPilot.Voice.GigaStt.csproj" />
     <ProjectReference Include="../../src/DeskPilot.Voice.AudioCapture/DeskPilot.Voice.AudioCapture.csproj" />
     <ProjectReference Include="../../src/DeskPilot.Voice.Vosk/DeskPilot.Voice.Vosk.csproj" />
     <ProjectReference Include="../../src/DeskPilot.Voice.WhisperCpp/DeskPilot.Voice.WhisperCpp.csproj" />

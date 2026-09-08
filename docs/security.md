@@ -4,7 +4,7 @@ Only registered command handlers can execute a command. Unresolved or ambiguous 
 
 The repository must not contain credentials, user databases, models, audio recordings, logs, generated runtime binaries, or personal absolute paths.
 
-Voice audio remains in bounded process memory, is cleared when pooled buffers are returned, and is never persisted, transmitted, or logged. Rejected wake attempts and ambient text are not logged. Provider failures are mapped to typed safe messages before they reach WPF.
+Voice audio remains in bounded memory and is transferred only to the application-owned GigaSTT process over loopback. It is never persisted or sent to a remote service. Pooled audio buffers are cleared when returned. Rejected wake attempts, ambient text, and audio are not logged. Provider failures are mapped to typed safe messages before they reach WPF.
 
 Release model metadata pins HTTPS sources, SHA-256 values, maximum sizes, provider formats, and licenses. Output file names are restricted to safe basenames and downloads stop when their byte limit is exceeded. Vosk archives reject traversal paths, links, excessive entries, and excessive expanded size. Whisper files must have a valid ggml header. Installation is immutable and model activation is transactional with last-known-good recovery.
 

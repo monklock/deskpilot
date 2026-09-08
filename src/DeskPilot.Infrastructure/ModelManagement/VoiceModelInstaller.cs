@@ -399,6 +399,11 @@ public sealed class VoiceModelInstaller : IVoiceModelPackageInstaller
                     && File.Exists(Path.Combine(entryPointPath, "graph", "Gr.fst"))
                     && File.Exists(Path.Combine(entryPointPath, "graph", "HCLr.fst"))
                     && File.Exists(Path.Combine(entryPointPath, "graph", "phones", "word_boundary.int"));
+            case VoiceModelProvider.GigaStt:
+                return Directory.Exists(entryPointPath)
+                    && File.Exists(Path.Combine(entryPointPath, "bin", "gigastt.exe"))
+                    && Directory.Exists(Path.Combine(entryPointPath, "models"))
+                    && Directory.EnumerateFiles(Path.Combine(entryPointPath, "models"), "*", SearchOption.AllDirectories).Any();
             default:
                 return false;
         }
@@ -539,6 +544,7 @@ public sealed class VoiceModelInstaller : IVoiceModelPackageInstaller
     {
         VoiceModelProvider.WakeVosk => new Version(0, 3, 38),
         VoiceModelProvider.CommandWhisper => new Version(1, 9, 1),
+        VoiceModelProvider.GigaStt => new Version(2, 21, 0),
         _ => throw new VoiceModelInstallException(VoiceModelResultCode.Incompatible, "Провайдер модели не поддерживается."),
     };
 

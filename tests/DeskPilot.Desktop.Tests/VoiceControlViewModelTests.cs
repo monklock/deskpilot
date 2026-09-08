@@ -103,8 +103,7 @@ public sealed class VoiceControlViewModelTests
 
         fixture.ViewModel.CurrentState.Should().Be(VoiceAssistantState.Error);
         fixture.ViewModel.LastRecognizedText.Should().Be("сделай громче");
-        fixture.ViewModel.ActiveWakeModelVersion.Should().Be("0.22");
-        fixture.ViewModel.ActiveCommandModelVersion.Should().Be("openai-base");
+        fixture.ViewModel.ActiveModelVersion.Should().Be("0.22");
         fixture.ViewModel.StatusMessage.Should().Be("Подключите Bluetooth-микрофон.");
     }
 

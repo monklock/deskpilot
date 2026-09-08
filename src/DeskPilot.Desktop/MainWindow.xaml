@@ -184,9 +184,8 @@
 
                     <Border Margin="0,16,0,0" Padding="12" Background="#F7F9FB" CornerRadius="6">
                         <StackPanel>
-                            <TextBlock FontWeight="SemiBold" Text="Активные локальные модели" />
-                            <TextBlock Margin="0,6,0,0" Text="{Binding Voice.ActiveWakeModelVersion, StringFormat=Vosk: {0}}" />
-                            <TextBlock Margin="0,3,0,0" Text="{Binding Voice.ActiveCommandModelVersion, StringFormat=Whisper: {0}}" />
+                            <TextBlock FontWeight="SemiBold" Text="Активная локальная модель" />
+                            <TextBlock Margin="0,6,0,0" Text="{Binding Voice.ActiveModelVersion, StringFormat=GigaSTT: {0}}" />
                         </StackPanel>
                     </Border>
 

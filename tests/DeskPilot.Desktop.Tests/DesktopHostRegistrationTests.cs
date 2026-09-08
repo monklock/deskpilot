@@ -6,6 +6,7 @@ using DeskPilot.Desktop.Services;
 using DeskPilot.Desktop.ViewModels;
 using DeskPilot.Voice.Abstractions;
 using DeskPilot.Voice.AudioCapture;
+using DeskPilot.Voice.GigaStt;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -36,6 +37,10 @@ public sealed class DesktopHostRegistrationTests
         using var host = App.CreateHost();
 
         host.Services.GetRequiredService<IVoicePipelineController>().Should().NotBeNull();
+        host.Services.GetRequiredService<IVoiceRuntimeProviderFactory>()
+            .Should().BeOfType<LocalVoiceRuntimeProviderFactory>();
+        host.Services.GetRequiredService<GigaSttRuntime>()
+            .Should().BeSameAs(host.Services.GetRequiredService<GigaSttRuntime>());
         host.Services.GetRequiredService<IVoicePipelineStateSource>().Should().NotBeNull();
         host.Services.GetRequiredService<IVoiceModelActivationGate>().Should().NotBeNull();
         host.Services.GetRequiredService<IBufferedVoiceCaptureSessionFactory>()
